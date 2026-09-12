@@ -2,15 +2,14 @@
 """Fine-tune only the HyenaDNA projection head for CCA1 next-nucleotide prediction."""
 
 import argparse
-import os
-import random
+import math
 import re
 import sys
 from typing import List
 
 import torch
 import torch.nn.functional as F
-from torch.utils.data import DataLoader, Dataset, random_split
+from torch.utils.data import DataLoader, Dataset
 from transformers import AutoModel, AutoTokenizer
 
 PROJECTION_SAVE_PATH = "projection_head_finetuned.pt"
@@ -21,6 +20,7 @@ DEFAULT_BATCH_SIZE = 8
 DEFAULT_EPOCHS = 40
 DEFAULT_LR = 1e-3
 DEFAULT_PATIENCE = 5
+DEFAULT_VALIDATION_FRACTION = 0.1
 NUCLEOTIDES = "ACGT"
 CLASS_TO_NUC = list(NUCLEOTIDES)
 NUC_TO_CLASS = {n: i for i, n in enumerate(NUCLEOTIDES)}
@@ -52,10 +52,30 @@ def parse_fasta(raw: str) -> str:
 
 def build_windows(sequence: str, window_size: int, stride: int) -> List[str]:
     """Produce a sliding-window list of raw nucleotide strings for tokenizer input."""
+    if window_size < 2:
+        raise ValueError("window_size must be at least 2.")
+    if stride < 1:
+        raise ValueError("stride must be at least 1.")
     if len(sequence) < window_size:
         raise ValueError(f"Sequence length {len(sequence)} is shorter than window_size {window_size}.")
     windows = [sequence[i : i + window_size] for i in range(0, len(sequence) - window_size + 1, stride)]
     return windows
+
+
+def split_train_validation(
+    sequence: str, window_size: int, validation_fraction: float
+) -> tuple[str, str]:
+    """Make a deterministic, non-overlapping split before window construction."""
+    if not 0.0 < validation_fraction < 1.0:
+        raise ValueError("validation_fraction must be between 0 and 1.")
+    validation_size = max(window_size, math.ceil(len(sequence) * validation_fraction))
+    training_size = len(sequence) - validation_size
+    if training_size < window_size:
+        raise ValueError(
+            f"Sequence length {len(sequence)} is too short for non-overlapping training "
+            f"and validation regions with window_size {window_size}."
+        )
+    return sequence[:training_size], sequence[training_size:]
 
 
 def load_sequence(args: argparse.Namespace) -> str:
@@ -102,12 +122,10 @@ def compute_nucleotide_distribution(sequence: str) -> dict:
     return {nuc: counts[nuc] / total for nuc in NUCLEOTIDES} if total else counts
 
 
-def logits_to_distribution(logits: torch.Tensor, mask: torch.Tensor) -> torch.Tensor:
+def logits_to_probability_totals(logits: torch.Tensor, mask: torch.Tensor) -> torch.Tensor:
     probs = F.softmax(logits, dim=-1)
     masked_probs = probs * mask.unsqueeze(-1).float()
-    counts = masked_probs.sum(dim=(0, 1))
-    total = mask.sum().item()
-    return counts / total if total > 0 else torch.zeros(4, device=logits.device)
+    return masked_probs.sum(dim=(0, 1))
 
 
 def generate_sample(model, projection, tokenizer, seed: str, length: int, context_size: int, device: torch.device) -> str:
@@ -115,7 +133,9 @@ def generate_sample(model, projection, tokenizer, seed: str, length: int, contex
     generated = seed
     for _ in range(length):
         context = generated[-context_size:]
-        input_ids = tokenizer(context, return_tensors="pt")["input_ids"].to(device)
+        input_ids = tokenizer(
+            context, return_tensors="pt", add_special_tokens=False
+        )["input_ids"].to(device)
         with torch.no_grad():
             hidden = model(input_ids)[0]
             logits = projection(hidden[0, -1, :])
@@ -142,7 +162,7 @@ def evaluate(model, projection, dataloader, label_map: dict, device: torch.devic
             mask = labels != -100
             loss = criterion(logits.view(-1, 4), labels.view(-1))
             total_loss += loss.item() * mask.sum().item()
-            total_probs += logits_to_distribution(logits, mask)
+            total_probs += logits_to_probability_totals(logits, mask)
             total_tokens += mask.sum().item()
     avg_loss = total_loss / total_tokens if total_tokens else float("inf")
     avg_probs = total_probs / total_tokens if total_tokens else torch.zeros(4, device=device)
@@ -165,8 +185,12 @@ def main() -> None:
                         help="Learning rate for the projection head optimizer.")
     parser.add_argument("--patience", type=int, default=DEFAULT_PATIENCE,
                         help="Early stopping patience on validation loss.")
+    parser.add_argument("--validation-fraction", type=float, default=DEFAULT_VALIDATION_FRACTION,
+                        help="Fraction held out as a contiguous validation tail (default: 0.1).")
     parser.add_argument("--model-name", type=str, default=DEFAULT_MODEL_NAME,
                         help="Hugging Face model name or path for HyenaDNA.")
+    parser.add_argument("--output", type=str, default=PROJECTION_SAVE_PATH,
+                        help=f"Projection-head output path (default: {PROJECTION_SAVE_PATH}).")
     parser.add_argument("--device", type=str, default="cuda",
                         help="Compute device to use, e.g. cuda or cpu.")
     args = parser.parse_args()
@@ -174,7 +198,7 @@ def main() -> None:
     if args.fasta_file is None and args.fasta_string is None:
         parser.error("Provide either --fasta-file or --fasta-string.")
 
-    sequence = parse_fasta(args.fasta_string if args.fasta_string is not None else open(args.fasta_file, "r", encoding="utf-8").read())
+    sequence = load_sequence(args)
     print(f"Loaded sequence length: {len(sequence)}")
     actual_dist = compute_nucleotide_distribution(sequence)
     print("Actual CCA1 nucleotide distribution:")
@@ -190,16 +214,24 @@ def main() -> None:
     model.eval()
 
     label_map = get_label_id_map(tokenizer)
-    data = prepare_dataset(sequence, tokenizer, args.window_size, args.stride)
-    print(f"Prepared {len(data)} sliding windows of size {args.window_size}.")
+    train_sequence, val_sequence = split_train_validation(
+        sequence, args.window_size, args.validation_fraction
+    )
+    train_data = prepare_dataset(train_sequence, tokenizer, args.window_size, args.stride)
+    val_data = prepare_dataset(val_sequence, tokenizer, args.window_size, args.stride)
+    print(
+        f"Non-overlapping split: {len(train_sequence)} training bases "
+        f"and {len(val_sequence)} validation bases."
+    )
+    print(
+        f"Prepared {len(train_data)} training windows and {len(val_data)} validation "
+        f"windows of size {args.window_size}."
+    )
 
-    val_size = max(1, int(len(data) * 0.1))
-    train_size = len(data) - val_size
-    train_data, val_data = random_split(data, [train_size, val_size], generator=torch.Generator().manual_seed(42))
     train_loader = DataLoader(train_data, batch_size=args.batch_size, shuffle=True)
     val_loader = DataLoader(val_data, batch_size=args.batch_size)
 
-    projection = torch.nn.Linear(model.config.hidden_size, 4, bias=False).to(device)
+    projection = torch.nn.Linear(model.config.d_model, 4, bias=False).to(device)
     torch.nn.init.xavier_uniform_(projection.weight)
     optimizer = torch.optim.AdamW(projection.parameters(), lr=args.lr)
     criterion = torch.nn.CrossEntropyLoss(ignore_index=-100)
@@ -245,11 +277,11 @@ def main() -> None:
                 break
 
     if best_state is not None:
-        torch.save(best_state, PROJECTION_SAVE_PATH)
-        print(f"Saved fine-tuned projection head to {PROJECTION_SAVE_PATH}")
+        torch.save(best_state, args.output)
+        print(f"Saved fine-tuned projection head to {args.output}")
     else:
-        torch.save(projection.state_dict(), PROJECTION_SAVE_PATH)
-        print(f"Saved final projection head to {PROJECTION_SAVE_PATH}")
+        torch.save(projection.state_dict(), args.output)
+        print(f"Saved final projection head to {args.output}")
 
     sample_seed = sequence[: min(args.window_size, len(sequence))]
     sample = generate_sample(model, projection, tokenizer, sample_seed, length=100, context_size=args.window_size, device=device)
