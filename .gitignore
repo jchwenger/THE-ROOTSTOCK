@@ -4,3 +4,6 @@ __pycache__/
 
 # MacOS
 .DS_Store
+
+# datasets, results
+data
