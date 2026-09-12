@@ -3,6 +3,7 @@ sentence-transformers
 scikit-learn
 wordfreq
 numpy
+matplotlib
 websockets
 pyserial
 python-osc
