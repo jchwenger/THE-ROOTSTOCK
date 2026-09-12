@@ -6,5 +6,5 @@ __pycache__/
 .DS_Store
 
 # datasets, results
-data
+data/*
 !data/hyena_base_finetuned_xent_comparison.png
