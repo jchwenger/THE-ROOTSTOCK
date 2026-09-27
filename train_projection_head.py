@@ -10,7 +10,7 @@ from typing import List
 import torch
 import torch.nn.functional as F
 from torch.utils.data import DataLoader, Dataset
-from transformers import AutoModel, AutoTokenizer
+from transformers import AutoModelForCausalLM, AutoTokenizer
 
 PROJECTION_SAVE_PATH = "projection_head_finetuned.pt"
 DEFAULT_MODEL_NAME = "LongSafari/hyenadna-tiny-1k-seqlen-hf"
@@ -18,7 +18,7 @@ DEFAULT_WINDOW_SIZE = 512
 DEFAULT_STRIDE = 1
 DEFAULT_BATCH_SIZE = 8
 DEFAULT_EPOCHS = 40
-DEFAULT_LR = 1e-3
+DEFAULT_LR = 1e-4
 DEFAULT_PATIENCE = 5
 DEFAULT_VALIDATION_FRACTION = 0.1
 NUCLEOTIDES = "ACGT"
@@ -121,6 +121,27 @@ def get_label_id_map(tokenizer: AutoTokenizer) -> dict:
     return {token_id: class_idx for class_idx, token_id in enumerate(ids)}
 
 
+def make_projection(
+    causal_model,
+    label_map: dict[int, int],
+    initialization: str,
+    device: torch.device,
+) -> torch.nn.Linear:
+    """Create the four-way head, normally from the pretrained LM head rows."""
+    projection = torch.nn.Linear(causal_model.config.d_model, 4, bias=False).to(device)
+    if initialization == "random":
+        torch.nn.init.xavier_uniform_(projection.weight)
+        return projection
+
+    output_head = causal_model.get_output_embeddings()
+    if output_head is None or output_head.weight.ndim != 2:
+        raise RuntimeError("The pretrained model does not expose a linear output head.")
+    with torch.no_grad():
+        for token_id, class_idx in label_map.items():
+            projection.weight[class_idx].copy_(output_head.weight[token_id])
+    return projection
+
+
 def remap_labels(
     labels: torch.Tensor, label_map: dict, ignore_index: int = -100
 ) -> torch.Tensor:
@@ -137,6 +158,20 @@ def compute_nucleotide_distribution(sequence: str) -> dict:
             counts[char] += 1
     total = sum(counts.values())
     return {nuc: counts[nuc] / total for nuc in NUCLEOTIDES} if total else counts
+
+
+def choose_device(requested: str) -> torch.device:
+    if requested == "auto":
+        if torch.cuda.is_available():
+            return torch.device("cuda")
+        if torch.backends.mps.is_available():
+            return torch.device("mps")
+        return torch.device("cpu")
+    if requested == "cuda" and not torch.cuda.is_available():
+        raise RuntimeError("CUDA was requested but is not available; use --device auto.")
+    if requested == "mps" and not torch.backends.mps.is_available():
+        raise RuntimeError("MPS was requested but is not available; use --device auto.")
+    return torch.device(requested)
 
 
 def logits_to_probability_totals(
@@ -244,6 +279,15 @@ def main() -> None:
         help="Learning rate for the projection head optimizer.",
     )
     parser.add_argument(
+        "--initialization",
+        choices=("pretrained", "random"),
+        default="pretrained",
+        help=(
+            "Initialize the A/C/G/T rows from HyenaDNA's pretrained LM head, or "
+            "start a new random classifier."
+        ),
+    )
+    parser.add_argument(
         "--patience",
         type=int,
         default=DEFAULT_PATIENCE,
@@ -269,9 +313,9 @@ def main() -> None:
     )
     parser.add_argument(
         "--device",
-        type=str,
-        default="cuda",
-        help="Compute device to use, e.g. cuda or cpu.",
+        choices=("cpu", "cuda", "mps", "auto"),
+        default="auto",
+        help="Compute device; 'auto' prefers CUDA, then Apple MPS, then CPU.",
     )
     args = parser.parse_args()
 
@@ -284,17 +328,17 @@ def main() -> None:
     print("Actual CCA1 nucleotide distribution:")
     print("  " + ", ".join([f"{n}:{actual_dist[n] * 100:.1f}%" for n in NUCLEOTIDES]))
 
-    device = torch.device(
-        args.device if torch.cuda.is_available() and args.device == "cuda" else "cpu"
-    )
+    device = choose_device(args.device)
     print(f"Using device: {device}")
 
     tokenizer = AutoTokenizer.from_pretrained(args.model_name, trust_remote_code=True)
-    model = AutoModel.from_pretrained(args.model_name, trust_remote_code=True).to(
-        device
-    )
-    for param in model.parameters():
+    causal_model = AutoModelForCausalLM.from_pretrained(
+        args.model_name, trust_remote_code=True, return_dict=True
+    ).to(device)
+    for param in causal_model.parameters():
         param.requires_grad = False
+    causal_model.eval()
+    model = causal_model.base_model
     model.eval()
 
     label_map = get_label_id_map(tokenizer)
@@ -317,13 +361,33 @@ def main() -> None:
     train_loader = DataLoader(train_data, batch_size=args.batch_size, shuffle=True)
     val_loader = DataLoader(val_data, batch_size=args.batch_size)
 
-    projection = torch.nn.Linear(model.config.d_model, 4, bias=False).to(device)
-    torch.nn.init.xavier_uniform_(projection.weight)
+    projection = make_projection(
+        causal_model, label_map, args.initialization, device
+    )
     optimizer = torch.optim.AdamW(projection.parameters(), lr=args.lr)
     criterion = torch.nn.CrossEntropyLoss(ignore_index=-100)
 
-    best_val_loss = float("inf")
-    best_state = None
+    # Epoch zero is a meaningful baseline when initialized from the pretrained
+    # A/C/G/T rows. Keeping it as a candidate guarantees that the saved head is
+    # never worse on validation than the restricted pretrained head.
+    initial_val_loss, initial_val_probs = evaluate(
+        model, projection, val_loader, label_map, device
+    )
+    initial_val_dist = {
+        nuc: float(initial_val_probs[idx].cpu().item())
+        for idx, nuc in enumerate(NUCLEOTIDES)
+    }
+    print(
+        f"Epoch 00 ({args.initialization} initialization): "
+        f"val_loss={initial_val_loss:.6f}"
+    )
+    print(
+        "  Validation nucleotide distribution: "
+        + ", ".join([f"{n}:{initial_val_dist[n] * 100:.1f}%" for n in NUCLEOTIDES])
+    )
+    best_val_loss = initial_val_loss
+    best_epoch = 0
+    best_state = {k: v.cpu().clone() for k, v in projection.state_dict().items()}
     patience = 0
 
     for epoch in range(1, args.epochs + 1):
@@ -363,6 +427,7 @@ def main() -> None:
             best_state = {
                 k: v.cpu().clone() for k, v in projection.state_dict().items()
             }
+            best_epoch = epoch
             patience = 0
             print("  ✓ New best validation loss; saving snapshot in memory.")
         else:
@@ -372,14 +437,15 @@ def main() -> None:
                 print("Early stopping triggered.")
                 break
 
-    if best_state is not None:
-        torch.save(best_state, args.output)
-        print(f"Saved fine-tuned projection head to {args.output}")
-    else:
-        torch.save(projection.state_dict(), args.output)
-        print(f"Saved final projection head to {args.output}")
+    projection.load_state_dict(best_state)
+    torch.save(best_state, args.output)
+    print(
+        f"Saved best projection head from epoch {best_epoch} to {args.output} "
+        f"(validation loss {best_val_loss:.6f})"
+    )
 
     sample_seed = sequence[: min(args.window_size, len(sequence))]
+    # Generate with the same best checkpoint that was written to disk.
     sample = generate_sample(
         model,
         projection,
