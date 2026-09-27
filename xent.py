@@ -36,56 +36,83 @@ FIGURE_EXPLANATION = (
 
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(
-        description="Plot per-nucleotide cross-entropy for base and fine-tuned HyenaDNA heads."
+        description="Plot per-nucleotide cross-entropy for base and fine-tuned HyenaDNA heads.",
+        formatter_class=argparse.ArgumentDefaultsHelpFormatter,
     )
-    parser.add_argument("--fasta", type=Path, default=DEFAULT_FASTA)
-    parser.add_argument("--projection-head", type=Path, default=DEFAULT_PROJECTION)
-    parser.add_argument("--output", type=Path, default=DEFAULT_OUTPUT)
-    parser.add_argument("--model", default=DEFAULT_MODEL)
+    parser.add_argument(
+        "--fasta", type=Path, default=DEFAULT_FASTA, help="Input FASTA file."
+    )
+    parser.add_argument(
+        "--projection-head",
+        type=Path,
+        default=DEFAULT_PROJECTION,
+        help="Fine-tuned projection-head weights.",
+    )
+    parser.add_argument(
+        "--output",
+        type=Path,
+        default=DEFAULT_OUTPUT,
+        help="Output path for the comparison figure.",
+    )
+    parser.add_argument(
+        "--model",
+        default=DEFAULT_MODEL,
+        help="Hugging Face model name or path.",
+    )
     parser.add_argument(
         "--max-tokens",
         type=int,
         default=None,
         metavar="N",
-        help="Limit analysis to the first N nucleotides of the selected region (default: all).",
+        help="Limit analysis to the first N nucleotides; omit to analyse the entire region.",
     )
     parser.add_argument(
         "--evaluation-region",
         choices=("validation", "all"),
         default="validation",
-        help="Evaluate the held-out validation tail or the entire sequence (default: validation).",
+        help="Evaluate the held-out validation tail or the entire sequence.",
     )
     parser.add_argument(
         "--validation-fraction",
         type=float,
         default=DEFAULT_VALIDATION_FRACTION,
-        help="Must match training when evaluating the validation region (default: 0.1).",
+        help="Fraction held out for validation; must match training.",
     )
     parser.add_argument(
         "--device",
         choices=("cpu", "cuda", "mps", "auto"),
         default="cpu",
-        help="Inference device (default: cpu; 'auto' prefers CUDA, then MPS).",
+        help="Inference device; 'auto' prefers CUDA, then MPS.",
     )
     parser.add_argument(
         "--context-size",
         type=int,
         default=512,
-        help="Maximum bases in each model window (default: 512, matching training).",
+        help="Maximum bases in each model window; this should match training.",
     )
     parser.add_argument(
         "--stride",
         type=int,
         default=256,
-        help="New bases scored per overlapping window after the first (default: 256).",
+        help="New bases scored per overlapping window after the first.",
     )
-    parser.add_argument("--line-width", type=int, default=70)
-    parser.add_argument("--dpi", type=int, default=180)
+    parser.add_argument(
+        "--line-width",
+        type=int,
+        default=70,
+        help="Maximum number of nucleotides per displayed line.",
+    )
+    parser.add_argument(
+        "--dpi",
+        type=int,
+        default=180,
+        help="Resolution of the output figure in dots per inch.",
+    )
     parser.add_argument(
         "--colour-percentile",
         type=float,
         default=99.0,
-        help="Percentile used as the shared colour maximum (default: 99).",
+        help="Percentile used as the shared colour maximum.",
     )
     return parser.parse_args()
 
@@ -94,7 +121,9 @@ def read_fasta(path: Path) -> str:
     """Read one or more FASTA records as a single uppercase A/C/G/T sequence."""
     raw = path.read_text(encoding="utf-8")
     sequence = "".join(
-        line.strip() for line in raw.splitlines() if line.strip() and not line.startswith(">")
+        line.strip()
+        for line in raw.splitlines()
+        if line.strip() and not line.startswith(">")
     ).upper()
     invalid = sorted(set(re.sub(r"\s", "", sequence)) - set(NUCLEOTIDES))
     if invalid:
@@ -125,7 +154,9 @@ def select_evaluation_region(
             f"Sequence length {len(sequence)} is too short for non-overlapping training "
             f"and validation regions with context size {context_size}."
         )
-    return sequence[training_size:], f"held-out validation bases {training_size + 1}-{len(sequence)}"
+    return sequence[
+        training_size:
+    ], f"held-out validation bases {training_size + 1}-{len(sequence)}"
 
 
 def choose_device(requested: str) -> torch.device:
@@ -143,7 +174,9 @@ def choose_device(requested: str) -> torch.device:
     return torch.device("cpu")
 
 
-def load_projection(path: Path, hidden_size: int, device: torch.device) -> torch.nn.Linear:
+def load_projection(
+    path: Path, hidden_size: int, device: torch.device
+) -> torch.nn.Linear:
     projection = torch.nn.Linear(hidden_size, len(NUCLEOTIDES), bias=False)
     try:
         state = torch.load(path, map_location="cpu", weights_only=True)
@@ -156,14 +189,21 @@ def load_projection(path: Path, hidden_size: int, device: torch.device) -> torch
 
 def encode_sequence(tokenizer, sequence: str) -> tuple[torch.Tensor, list[int]]:
     nucleotide_ids = [
-        tokenizer(base, add_special_tokens=False)["input_ids"][0] for base in NUCLEOTIDES
+        tokenizer(base, add_special_tokens=False)["input_ids"][0]
+        for base in NUCLEOTIDES
     ]
     # Converting character tokens directly avoids asking the tokenizer to accept a
     # sequence longer than the model limit; inference itself is windowed below.
-    input_ids = torch.tensor(tokenizer.convert_tokens_to_ids(list(sequence)), dtype=torch.long)
-    expected_ids = torch.tensor([nucleotide_ids[NUCLEOTIDES.index(base)] for base in sequence])
+    input_ids = torch.tensor(
+        tokenizer.convert_tokens_to_ids(list(sequence)), dtype=torch.long
+    )
+    expected_ids = torch.tensor(
+        [nucleotide_ids[NUCLEOTIDES.index(base)] for base in sequence]
+    )
     if not torch.equal(input_ids.cpu(), expected_ids):
-        raise RuntimeError("Tokenizer output is not one token per nucleotide as expected.")
+        raise RuntimeError(
+            "Tokenizer output is not one token per nucleotide as expected."
+        )
     return input_ids, nucleotide_ids
 
 
@@ -218,10 +258,14 @@ def compute_cross_entropies(
             prediction_positions = targets - start - 1
             labels = class_by_base.index_select(0, targets)
             base_loss = F.cross_entropy(
-                base_logits[0].index_select(0, prediction_positions), labels, reduction="none"
+                base_logits[0].index_select(0, prediction_positions),
+                labels,
+                reduction="none",
             )
             tuned_loss = F.cross_entropy(
-                tuned_logits[0].index_select(0, prediction_positions), labels, reduction="none"
+                tuned_logits[0].index_select(0, prediction_positions),
+                labels,
+                reduction="none",
             )
             base_scores[cursor:end] = base_loss.float().cpu().numpy()
             tuned_scores[cursor:end] = tuned_loss.float().cpu().numpy()
@@ -306,14 +350,24 @@ def make_figure(
     base_mean, base_ppl = summary(base_scores)
     tuned_mean, tuned_ppl = summary(tuned_scores)
     draw_sequence_panel(
-        axes[0], sequence, base_scores,
+        axes[0],
+        sequence,
+        base_scores,
         f"Pretrained HyenaDNA head\nmean CE {base_mean:.3f} nats · perplexity {base_ppl:.2f}",
-        display_line_width, font_size, cmap, norm,
+        display_line_width,
+        font_size,
+        cmap,
+        norm,
     )
     draw_sequence_panel(
-        axes[1], sequence, tuned_scores,
+        axes[1],
+        sequence,
+        tuned_scores,
         f"Fine-tuned A/C/G/T projection head\nmean CE {tuned_mean:.3f} nats · perplexity {tuned_ppl:.2f}",
-        display_line_width, font_size, cmap, norm,
+        display_line_width,
+        font_size,
+        cmap,
+        norm,
     )
 
     fig.suptitle(
@@ -324,7 +378,9 @@ def make_figure(
     )
     fig.subplots_adjust(left=0.025, right=0.91, top=0.80, bottom=0.18, wspace=0.06)
     colourbar_ax = fig.add_axes((0.925, 0.24, 0.014, 0.57))
-    colourbar = fig.colorbar(mpl.cm.ScalarMappable(norm=norm, cmap=cmap), cax=colourbar_ax)
+    colourbar = fig.colorbar(
+        mpl.cm.ScalarMappable(norm=norm, cmap=cmap), cax=colourbar_ax
+    )
     colourbar.set_label("Cross-entropy (nats; lower is more predictable)", fontsize=10)
     fig.legend(
         handles=[Patch(facecolor="#a8a8a8", label="No preceding context")],
@@ -332,7 +388,9 @@ def make_figure(
         bbox_to_anchor=(0.47, 0.083),
         frameon=False,
     )
-    fig.text(0.47, 0.045, FIGURE_EXPLANATION, ha="center", va="center", fontsize=9, wrap=True)
+    fig.text(
+        0.47, 0.045, FIGURE_EXPLANATION, ha="center", va="center", fontsize=9, wrap=True
+    )
 
     output.parent.mkdir(parents=True, exist_ok=True)
     fig.savefig(output, dpi=dpi, bbox_inches="tight", facecolor="white")
@@ -359,9 +417,13 @@ def main() -> None:
     print(f"Loading {args.model} ...")
 
     tokenizer = AutoTokenizer.from_pretrained(args.model, trust_remote_code=True)
-    causal_model = AutoModelForCausalLM.from_pretrained(
-        args.model, trust_remote_code=True, return_dict=True
-    ).to(device).eval()
+    causal_model = (
+        AutoModelForCausalLM.from_pretrained(
+            args.model, trust_remote_code=True, return_dict=True
+        )
+        .to(device)
+        .eval()
+    )
     hidden_size = int(causal_model.config.d_model)
     projection = load_projection(args.projection_head, hidden_size, device)
     input_ids, nucleotide_ids = encode_sequence(tokenizer, sequence)

@@ -41,7 +41,11 @@ def parse_fasta(raw: str) -> str:
     """Parse a raw FASTA string or direct nucleotide string into ACGT-only sequence."""
     raw = raw.strip()
     if raw.startswith(">"):
-        lines = [line.strip() for line in raw.splitlines() if line and not line.startswith(">")]
+        lines = [
+            line.strip()
+            for line in raw.splitlines()
+            if line and not line.startswith(">")
+        ]
         raw = "".join(lines)
     cleaned = re.sub(r"[^ACGTacgt]", "", raw)
     cleaned = cleaned.upper()
@@ -57,8 +61,13 @@ def build_windows(sequence: str, window_size: int, stride: int) -> List[str]:
     if stride < 1:
         raise ValueError("stride must be at least 1.")
     if len(sequence) < window_size:
-        raise ValueError(f"Sequence length {len(sequence)} is shorter than window_size {window_size}.")
-    windows = [sequence[i : i + window_size] for i in range(0, len(sequence) - window_size + 1, stride)]
+        raise ValueError(
+            f"Sequence length {len(sequence)} is shorter than window_size {window_size}."
+        )
+    windows = [
+        sequence[i : i + window_size]
+        for i in range(0, len(sequence) - window_size + 1, stride)
+    ]
     return windows
 
 
@@ -92,21 +101,29 @@ def load_sequence(args: argparse.Namespace) -> str:
     return parse_fasta(raw)
 
 
-def prepare_dataset(sequence: str, tokenizer: AutoTokenizer, window_size: int, stride: int) -> SequenceWindowDataset:
+def prepare_dataset(
+    sequence: str, tokenizer: AutoTokenizer, window_size: int, stride: int
+) -> SequenceWindowDataset:
     windows = build_windows(sequence, window_size, stride)
     # HyenaDNA input is character-level, so each window is tokenized as a raw nucleotide string.
-    encoded = tokenizer(windows, padding=True, return_tensors="pt", add_special_tokens=True)
+    encoded = tokenizer(
+        windows, padding=True, return_tensors="pt", add_special_tokens=True
+    )
     assert "input_ids" in encoded, "Tokenizer failed to return input IDs."
     return SequenceWindowDataset(encoded["input_ids"])
 
 
 def get_label_id_map(tokenizer: AutoTokenizer) -> dict:
     """Build mapping from tokenizer nucleotide token IDs to class indices."""
-    ids = [tokenizer(nuc, add_special_tokens=False)["input_ids"][0] for nuc in NUCLEOTIDES]
+    ids = [
+        tokenizer(nuc, add_special_tokens=False)["input_ids"][0] for nuc in NUCLEOTIDES
+    ]
     return {token_id: class_idx for class_idx, token_id in enumerate(ids)}
 
 
-def remap_labels(labels: torch.Tensor, label_map: dict, ignore_index: int = -100) -> torch.Tensor:
+def remap_labels(
+    labels: torch.Tensor, label_map: dict, ignore_index: int = -100
+) -> torch.Tensor:
     mapped = torch.full_like(labels, ignore_index)
     for token_id, class_idx in label_map.items():
         mapped[labels == token_id] = class_idx
@@ -122,20 +139,30 @@ def compute_nucleotide_distribution(sequence: str) -> dict:
     return {nuc: counts[nuc] / total for nuc in NUCLEOTIDES} if total else counts
 
 
-def logits_to_probability_totals(logits: torch.Tensor, mask: torch.Tensor) -> torch.Tensor:
+def logits_to_probability_totals(
+    logits: torch.Tensor, mask: torch.Tensor
+) -> torch.Tensor:
     probs = F.softmax(logits, dim=-1)
     masked_probs = probs * mask.unsqueeze(-1).float()
     return masked_probs.sum(dim=(0, 1))
 
 
-def generate_sample(model, projection, tokenizer, seed: str, length: int, context_size: int, device: torch.device) -> str:
+def generate_sample(
+    model,
+    projection,
+    tokenizer,
+    seed: str,
+    length: int,
+    context_size: int,
+    device: torch.device,
+) -> str:
     model.eval()
     generated = seed
     for _ in range(length):
         context = generated[-context_size:]
-        input_ids = tokenizer(
-            context, return_tensors="pt", add_special_tokens=False
-        )["input_ids"].to(device)
+        input_ids = tokenizer(context, return_tensors="pt", add_special_tokens=False)[
+            "input_ids"
+        ].to(device)
         with torch.no_grad():
             hidden = model(input_ids)[0]
             logits = projection(hidden[0, -1, :])
@@ -145,7 +172,9 @@ def generate_sample(model, projection, tokenizer, seed: str, length: int, contex
     return generated
 
 
-def evaluate(model, projection, dataloader, label_map: dict, device: torch.device) -> tuple[float, torch.Tensor]:
+def evaluate(
+    model, projection, dataloader, label_map: dict, device: torch.device
+) -> tuple[float, torch.Tensor]:
     model.eval()
     projection.eval()
     criterion = torch.nn.CrossEntropyLoss(ignore_index=-100)
@@ -165,34 +194,85 @@ def evaluate(model, projection, dataloader, label_map: dict, device: torch.devic
             total_probs += logits_to_probability_totals(logits, mask)
             total_tokens += mask.sum().item()
     avg_loss = total_loss / total_tokens if total_tokens else float("inf")
-    avg_probs = total_probs / total_tokens if total_tokens else torch.zeros(4, device=device)
+    avg_probs = (
+        total_probs / total_tokens if total_tokens else torch.zeros(4, device=device)
+    )
     return avg_loss, avg_probs
 
 
 def main() -> None:
-    parser = argparse.ArgumentParser(description="Finetune HyenaDNA projection head on CCA1 nucleotide sequence.")
-    parser.add_argument("--fasta-file", type=str, help="Path to a FASTA file containing the CCA1 sequence.")
-    parser.add_argument("--fasta-string", type=str, help="Raw FASTA contents or raw A/C/G/T string.")
-    parser.add_argument("--window-size", type=int, default=DEFAULT_WINDOW_SIZE,
-                        help="Sliding window size for HyenaDNA tokenization (default: 512).")
-    parser.add_argument("--stride", type=int, default=DEFAULT_STRIDE,
-                        help="Sliding window stride over the training sequence.")
-    parser.add_argument("--batch-size", type=int, default=DEFAULT_BATCH_SIZE,
-                        help="Training batch size.")
-    parser.add_argument("--epochs", type=int, default=DEFAULT_EPOCHS,
-                        help="Maximum number of training epochs.")
-    parser.add_argument("--lr", type=float, default=DEFAULT_LR,
-                        help="Learning rate for the projection head optimizer.")
-    parser.add_argument("--patience", type=int, default=DEFAULT_PATIENCE,
-                        help="Early stopping patience on validation loss.")
-    parser.add_argument("--validation-fraction", type=float, default=DEFAULT_VALIDATION_FRACTION,
-                        help="Fraction held out as a contiguous validation tail (default: 0.1).")
-    parser.add_argument("--model-name", type=str, default=DEFAULT_MODEL_NAME,
-                        help="Hugging Face model name or path for HyenaDNA.")
-    parser.add_argument("--output", type=str, default=PROJECTION_SAVE_PATH,
-                        help=f"Projection-head output path (default: {PROJECTION_SAVE_PATH}).")
-    parser.add_argument("--device", type=str, default="cuda",
-                        help="Compute device to use, e.g. cuda or cpu.")
+    parser = argparse.ArgumentParser(
+        description="Finetune HyenaDNA projection head on CCA1 nucleotide sequence.",
+        formatter_class=argparse.ArgumentDefaultsHelpFormatter,
+    )
+    parser.add_argument(
+        "--fasta-file",
+        type=str,
+        help="Path to a FASTA file containing the CCA1 sequence.",
+    )
+    parser.add_argument(
+        "--fasta-string", type=str, help="Raw FASTA contents or raw A/C/G/T string."
+    )
+    parser.add_argument(
+        "--window-size",
+        type=int,
+        default=DEFAULT_WINDOW_SIZE,
+        help="Sliding window size for HyenaDNA tokenization.",
+    )
+    parser.add_argument(
+        "--stride",
+        type=int,
+        default=DEFAULT_STRIDE,
+        help="Sliding window stride over the training sequence.",
+    )
+    parser.add_argument(
+        "--batch-size",
+        type=int,
+        default=DEFAULT_BATCH_SIZE,
+        help="Training batch size.",
+    )
+    parser.add_argument(
+        "--epochs",
+        type=int,
+        default=DEFAULT_EPOCHS,
+        help="Maximum number of training epochs.",
+    )
+    parser.add_argument(
+        "--lr",
+        type=float,
+        default=DEFAULT_LR,
+        help="Learning rate for the projection head optimizer.",
+    )
+    parser.add_argument(
+        "--patience",
+        type=int,
+        default=DEFAULT_PATIENCE,
+        help="Early stopping patience on validation loss.",
+    )
+    parser.add_argument(
+        "--validation-fraction",
+        type=float,
+        default=DEFAULT_VALIDATION_FRACTION,
+        help="Fraction held out as a contiguous validation tail.",
+    )
+    parser.add_argument(
+        "--model-name",
+        type=str,
+        default=DEFAULT_MODEL_NAME,
+        help="Hugging Face model name or path for HyenaDNA.",
+    )
+    parser.add_argument(
+        "--output",
+        type=str,
+        default=PROJECTION_SAVE_PATH,
+        help="Projection-head output path.",
+    )
+    parser.add_argument(
+        "--device",
+        type=str,
+        default="cuda",
+        help="Compute device to use, e.g. cuda or cpu.",
+    )
     args = parser.parse_args()
 
     if args.fasta_file is None and args.fasta_string is None:
@@ -202,13 +282,17 @@ def main() -> None:
     print(f"Loaded sequence length: {len(sequence)}")
     actual_dist = compute_nucleotide_distribution(sequence)
     print("Actual CCA1 nucleotide distribution:")
-    print("  " + ", ".join([f"{n}:{actual_dist[n]*100:.1f}%" for n in NUCLEOTIDES]))
+    print("  " + ", ".join([f"{n}:{actual_dist[n] * 100:.1f}%" for n in NUCLEOTIDES]))
 
-    device = torch.device(args.device if torch.cuda.is_available() and args.device == "cuda" else "cpu")
+    device = torch.device(
+        args.device if torch.cuda.is_available() and args.device == "cuda" else "cpu"
+    )
     print(f"Using device: {device}")
 
     tokenizer = AutoTokenizer.from_pretrained(args.model_name, trust_remote_code=True)
-    model = AutoModel.from_pretrained(args.model_name, trust_remote_code=True).to(device)
+    model = AutoModel.from_pretrained(args.model_name, trust_remote_code=True).to(
+        device
+    )
     for param in model.parameters():
         param.requires_grad = False
     model.eval()
@@ -217,7 +301,9 @@ def main() -> None:
     train_sequence, val_sequence = split_train_validation(
         sequence, args.window_size, args.validation_fraction
     )
-    train_data = prepare_dataset(train_sequence, tokenizer, args.window_size, args.stride)
+    train_data = prepare_dataset(
+        train_sequence, tokenizer, args.window_size, args.stride
+    )
     val_data = prepare_dataset(val_sequence, tokenizer, args.window_size, args.stride)
     print(
         f"Non-overlapping split: {len(train_sequence)} training bases "
@@ -259,14 +345,24 @@ def main() -> None:
 
         avg_train_loss = epoch_loss / epoch_tokens if epoch_tokens else float("inf")
         val_loss, val_probs = evaluate(model, projection, val_loader, label_map, device)
-        val_dist = {nuc: float(val_probs[idx].cpu().item()) for idx, nuc in enumerate(NUCLEOTIDES)}
+        val_dist = {
+            nuc: float(val_probs[idx].cpu().item())
+            for idx, nuc in enumerate(NUCLEOTIDES)
+        }
 
-        print(f"Epoch {epoch:02d}: train_loss={avg_train_loss:.6f}, val_loss={val_loss:.6f}")
-        print("  Validation nucleotide distribution: " + ", ".join([f"{n}:{val_dist[n]*100:.1f}%" for n in NUCLEOTIDES]))
+        print(
+            f"Epoch {epoch:02d}: train_loss={avg_train_loss:.6f}, val_loss={val_loss:.6f}"
+        )
+        print(
+            "  Validation nucleotide distribution: "
+            + ", ".join([f"{n}:{val_dist[n] * 100:.1f}%" for n in NUCLEOTIDES])
+        )
 
         if val_loss < best_val_loss - 1e-6:
             best_val_loss = val_loss
-            best_state = {k: v.cpu().clone() for k, v in projection.state_dict().items()}
+            best_state = {
+                k: v.cpu().clone() for k, v in projection.state_dict().items()
+            }
             patience = 0
             print("  ✓ New best validation loss; saving snapshot in memory.")
         else:
@@ -284,12 +380,20 @@ def main() -> None:
         print(f"Saved final projection head to {args.output}")
 
     sample_seed = sequence[: min(args.window_size, len(sequence))]
-    sample = generate_sample(model, projection, tokenizer, sample_seed, length=100, context_size=args.window_size, device=device)
+    sample = generate_sample(
+        model,
+        projection,
+        tokenizer,
+        sample_seed,
+        length=100,
+        context_size=args.window_size,
+        device=device,
+    )
     sample_counts = compute_nucleotide_distribution(sample[len(sample_seed) :])
     print("Generated sequence sample (100 nt):")
     print(sample[len(sample_seed) :])
     print("Generated nucleotide distribution:")
-    print("  " + ", ".join([f"{n}:{sample_counts[n]*100:.1f}%" for n in NUCLEOTIDES]))
+    print("  " + ", ".join([f"{n}:{sample_counts[n] * 100:.1f}%" for n in NUCLEOTIDES]))
 
 
 if __name__ == "__main__":
