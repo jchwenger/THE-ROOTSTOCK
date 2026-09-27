@@ -68,9 +68,12 @@ def parse_args() -> argparse.Namespace:
     )
     parser.add_argument(
         "--evaluation-region",
-        choices=("validation", "all"),
+        choices=("training", "validation", "all"),
         default="validation",
-        help="Evaluate the held-out validation tail or the entire sequence.",
+        help=(
+            "Evaluate the fitted training portion, held-out validation tail, or "
+            "the entire sequence."
+        ),
     )
     parser.add_argument(
         "--validation-fraction",
@@ -144,7 +147,7 @@ def select_evaluation_region(
 ) -> tuple[str, str]:
     """Select the same contiguous validation tail reserved by the trainer."""
     if region == "all":
-        return sequence, "complete sequence"
+        return sequence, "complete sequence (training and held-out bases)"
     if not 0.0 < validation_fraction < 1.0:
         raise ValueError("--validation-fraction must be between 0 and 1.")
     validation_size = max(context_size, math.ceil(len(sequence) * validation_fraction))
@@ -154,9 +157,11 @@ def select_evaluation_region(
             f"Sequence length {len(sequence)} is too short for non-overlapping training "
             f"and validation regions with context size {context_size}."
         )
-    return sequence[
-        training_size:
-    ], f"held-out validation bases {training_size + 1}-{len(sequence)}"
+    if region == "training":
+        return sequence[:training_size], f"fitted training bases 1-{training_size}"
+    return sequence[training_size:], (
+        f"held-out validation bases {training_size + 1}-{len(sequence)}"
+    )
 
 
 def choose_device(requested: str) -> torch.device:
@@ -285,6 +290,15 @@ def summary(scores: np.ndarray) -> tuple[float, float]:
     return mean, math.exp(mean)
 
 
+def paired_summary(
+    base_scores: np.ndarray, tuned_scores: np.ndarray
+) -> tuple[float, float]:
+    """Return mean CE improvement and fraction of bases improved by tuning."""
+    valid = np.isfinite(base_scores) & np.isfinite(tuned_scores)
+    improvements = base_scores[valid] - tuned_scores[valid]
+    return float(np.mean(improvements)), float(np.mean(improvements > 0.0))
+
+
 def draw_sequence_panel(
     ax: plt.Axes,
     sequence: str,
@@ -349,6 +363,7 @@ def make_figure(
 
     base_mean, base_ppl = summary(base_scores)
     tuned_mean, tuned_ppl = summary(tuned_scores)
+    mean_improvement, fraction_improved = paired_summary(base_scores, tuned_scores)
     draw_sequence_panel(
         axes[0],
         sequence,
@@ -371,7 +386,9 @@ def make_figure(
     )
 
     fig.suptitle(
-        f"Arabidopsis thaliana: token-wise HyenaDNA cross-entropy\n{region_label}",
+        "Arabidopsis thaliana: token-wise HyenaDNA cross-entropy\n"
+        f"{region_label} · mean CE improvement {mean_improvement:+.3f} nats · "
+        f"{fraction_improved:.1%} of bases improved",
         fontsize=17,
         fontweight="bold",
         y=0.975,
@@ -441,8 +458,13 @@ def main() -> None:
     )
     base_mean, base_ppl = summary(base_scores)
     tuned_mean, tuned_ppl = summary(tuned_scores)
+    mean_improvement, fraction_improved = paired_summary(base_scores, tuned_scores)
     print(f"Base:       mean CE={base_mean:.4f} nats, perplexity={base_ppl:.4f}")
     print(f"Fine-tuned: mean CE={tuned_mean:.4f} nats, perplexity={tuned_ppl:.4f}")
+    print(
+        f"Difference: mean CE improvement={mean_improvement:+.4f} nats; "
+        f"fine-tuned head is better at {fraction_improved:.1%} of scored bases"
+    )
 
     make_figure(
         sequence,
