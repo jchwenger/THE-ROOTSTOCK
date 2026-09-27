@@ -7,4 +7,4 @@ __pycache__/
 
 # datasets, results
 data/*
-!data/hyena_base_finetuned_xent_comparison.png
+!data/xent/hyena_base_finetuned_xent_comparison.png
