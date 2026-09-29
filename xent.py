@@ -1,9 +1,10 @@
 #!/usr/bin/env python3
-"""Compare token-wise HyenaDNA cross-entropy before and after head fine-tuning."""
+"""Compare token-wise HyenaDNA cross-entropy for one or more fine-tuned heads."""
 
 from __future__ import annotations
 
 import argparse
+import gc
 import math
 import re
 from pathlib import Path
@@ -16,11 +17,16 @@ import torch.nn.functional as F
 from matplotlib.patches import Patch
 from transformers import AutoModelForCausalLM, AutoTokenizer
 
+from hyenadna_models import (
+    AUTO_MODEL_REVISION,
+    DEFAULT_HYENADNA_MODEL,
+    resolve_hyenadna_revision,
+)
 
-DEFAULT_MODEL = "LongSafari/hyenadna-tiny-1k-seqlen-hf"
-DEFAULT_FASTA = Path("data/arabiopsis-thaliana.CCA1.fasta")
-DEFAULT_PROJECTION = Path("projection_head_finetuned.pt")
-DEFAULT_OUTPUT = Path("data/hyena_base_finetuned_xent_comparison.png")
+DEFAULT_MODEL = DEFAULT_HYENADNA_MODEL
+DEFAULT_FASTA = Path("data/circadian/arabidopsis-thaliana.CCA1.fasta")
+DEFAULT_HEADS_DIR = Path("heads")
+DEFAULT_OUTPUT_DIR = Path("data/xent")
 DEFAULT_VALIDATION_FRACTION = 0.1
 NUCLEOTIDES = "ACGT"
 
@@ -45,19 +51,37 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument(
         "--projection-head",
         type=Path,
-        default=DEFAULT_PROJECTION,
-        help="Fine-tuned projection-head weights.",
+        default=None,
+        help=(
+            "Fine-tuned projection-head weights. If omitted, evaluate every .pt "
+            "file in heads/."
+        ),
     )
     parser.add_argument(
         "--output",
         type=Path,
-        default=DEFAULT_OUTPUT,
-        help="Output path for the comparison figure.",
+        default=None,
+        help=(
+            "Output path for a single comparison. When omitted, figures are named "
+            "after their heads under data/xent/."
+        ),
     )
     parser.add_argument(
         "--model",
-        default=DEFAULT_MODEL,
-        help="Hugging Face model name or path.",
+        default=None,
+        help=(
+            "Hugging Face model name or path. By default this is inferred from a "
+            "model-derived head filename; legacy explicitly selected heads use the "
+            f"default {DEFAULT_MODEL}."
+        ),
+    )
+    parser.add_argument(
+        "--model-revision",
+        default=AUTO_MODEL_REVISION,
+        help=(
+            "Hugging Face commit, tag, or branch; 'auto' selects the pinned commit "
+            "for each known HyenaDNA model."
+        ),
     )
     parser.add_argument(
         "--max-tokens",
@@ -118,6 +142,39 @@ def parse_args() -> argparse.Namespace:
         help="Percentile used as the shared colour maximum.",
     )
     return parser.parse_args()
+
+
+def discover_projection_heads(selected: Path | None) -> list[Path]:
+    """Return one explicitly selected head or every checkpoint in heads/."""
+    if selected is not None:
+        if not selected.is_file():
+            raise FileNotFoundError(f"Projection head does not exist: {selected}")
+        return [selected]
+    heads = sorted(DEFAULT_HEADS_DIR.glob("*.pt"))
+    if not heads:
+        raise FileNotFoundError(
+            f"No projection heads found in {DEFAULT_HEADS_DIR}/. Train a head first "
+            "or pass --projection-head."
+        )
+    return heads
+
+
+def infer_model_from_head(path: Path) -> str | None:
+    """Recover the LongSafari model ID encoded by the trainer's default filename."""
+    match = re.fullmatch(r"projection_head_hyenadna_(.+)\.pt", path.name)
+    if match is None:
+        return None
+    model_data = match.group(1)
+    width_variant = re.fullmatch(r"(.+)-(d\d+)", model_data)
+    if width_variant is not None:
+        model_data = f"{width_variant.group(1)}-seqlen-{width_variant.group(2)}"
+    else:
+        model_data = f"{model_data}-seqlen"
+    return f"LongSafari/hyenadna-{model_data}-hf"
+
+
+def default_figure_path(head: Path) -> Path:
+    return DEFAULT_OUTPUT_DIR / f"{head.stem}_xent_comparison.png"
 
 
 def read_fasta(path: Path) -> str:
@@ -339,6 +396,7 @@ def make_figure(
     dpi: int,
     colour_percentile: float,
     region_label: str,
+    model_name: str,
 ) -> None:
     if line_width < 10:
         raise ValueError("--line-width must be at least 10.")
@@ -387,7 +445,8 @@ def make_figure(
 
     fig.suptitle(
         "Arabidopsis thaliana: token-wise HyenaDNA cross-entropy\n"
-        f"{region_label} · mean CE improvement {mean_improvement:+.3f} nats · "
+        f"{model_name} · {region_label} · "
+        f"mean CE improvement {mean_improvement:+.3f} nats · "
         f"{fraction_improved:.1%} of bases improved",
         fontsize=17,
         fontweight="bold",
@@ -416,6 +475,27 @@ def make_figure(
 
 def main() -> None:
     args = parse_args()
+    projection_heads = discover_projection_heads(args.projection_head)
+    if args.output is not None and len(projection_heads) != 1:
+        raise ValueError(
+            "--output can only be used when exactly one head is selected with "
+            "--projection-head. Omit --output for automatic per-head filenames."
+        )
+    if (
+        args.model is not None
+        and args.projection_head is None
+        and len(projection_heads) > 1
+    ):
+        raise ValueError(
+            "--model cannot override multiple automatically discovered heads. "
+            "Select one with --projection-head."
+        )
+    if args.model_revision != AUTO_MODEL_REVISION and len(projection_heads) > 1:
+        raise ValueError(
+            "--model-revision can only override a single model. Select one with "
+            "--projection-head, or omit it to use each model's pinned revision."
+        )
+
     complete_sequence = read_fasta(args.fasta)
     sequence, region_label = select_evaluation_region(
         complete_sequence,
@@ -431,52 +511,83 @@ def main() -> None:
     device = choose_device(args.device)
     print(f"Loaded {len(sequence):,} nucleotides from {args.fasta}")
     print(f"Using device: {device}")
-    print(f"Loading {args.model} ...")
+    print(f"Evaluating {len(projection_heads)} projection head(s).")
 
-    tokenizer = AutoTokenizer.from_pretrained(args.model, trust_remote_code=True)
-    causal_model = (
-        AutoModelForCausalLM.from_pretrained(
-            args.model, trust_remote_code=True, return_dict=True
+    for index, head_path in enumerate(projection_heads, start=1):
+        inferred_model = infer_model_from_head(head_path)
+        model_name = args.model or inferred_model
+        if model_name is None:
+            model_name = DEFAULT_MODEL
+            print(
+                f"Could not infer a model from {head_path.name}; using "
+                f"{DEFAULT_MODEL}. Pass --projection-head and --model if this "
+                "legacy head belongs to a different backbone."
+            )
+        output_path = args.output or default_figure_path(head_path)
+        model_revision = resolve_hyenadna_revision(model_name, args.model_revision)
+
+        print(f"\n[{index}/{len(projection_heads)}] Head: {head_path}")
+        print(f"Loading {model_name} ...")
+        print(f"Model revision: {model_revision or 'unpinned repository default'}")
+        tokenizer = AutoTokenizer.from_pretrained(
+            model_name,
+            revision=model_revision,
+            trust_remote_code=True,
         )
-        .to(device)
-        .eval()
-    )
-    hidden_size = int(causal_model.config.d_model)
-    projection = load_projection(args.projection_head, hidden_size, device)
-    input_ids, nucleotide_ids = encode_sequence(tokenizer, sequence)
+        causal_model = (
+            AutoModelForCausalLM.from_pretrained(
+                model_name,
+                revision=model_revision,
+                trust_remote_code=True,
+                return_dict=True,
+            )
+            .to(device)
+            .eval()
+        )
+        hidden_size = int(causal_model.config.d_model)
+        projection = load_projection(head_path, hidden_size, device)
+        input_ids, nucleotide_ids = encode_sequence(tokenizer, sequence)
 
-    print("Computing token-wise cross-entropies ...")
-    base_scores, tuned_scores = compute_cross_entropies(
-        sequence,
-        input_ids,
-        nucleotide_ids,
-        causal_model,
-        projection,
-        device,
-        args.context_size,
-        args.stride,
-    )
-    base_mean, base_ppl = summary(base_scores)
-    tuned_mean, tuned_ppl = summary(tuned_scores)
-    mean_improvement, fraction_improved = paired_summary(base_scores, tuned_scores)
-    print(f"Base:       mean CE={base_mean:.4f} nats, perplexity={base_ppl:.4f}")
-    print(f"Fine-tuned: mean CE={tuned_mean:.4f} nats, perplexity={tuned_ppl:.4f}")
-    print(
-        f"Difference: mean CE improvement={mean_improvement:+.4f} nats; "
-        f"fine-tuned head is better at {fraction_improved:.1%} of scored bases"
-    )
+        print("Computing token-wise cross-entropies ...")
+        base_scores, tuned_scores = compute_cross_entropies(
+            sequence,
+            input_ids,
+            nucleotide_ids,
+            causal_model,
+            projection,
+            device,
+            args.context_size,
+            args.stride,
+        )
+        base_mean, base_ppl = summary(base_scores)
+        tuned_mean, tuned_ppl = summary(tuned_scores)
+        mean_improvement, fraction_improved = paired_summary(base_scores, tuned_scores)
+        print(f"Base:       mean CE={base_mean:.4f} nats, perplexity={base_ppl:.4f}")
+        print(f"Fine-tuned: mean CE={tuned_mean:.4f} nats, perplexity={tuned_ppl:.4f}")
+        print(
+            f"Difference: mean CE improvement={mean_improvement:+.4f} nats; "
+            f"fine-tuned head is better at {fraction_improved:.1%} of scored bases"
+        )
 
-    make_figure(
-        sequence,
-        base_scores,
-        tuned_scores,
-        args.output,
-        args.line_width,
-        args.dpi,
-        args.colour_percentile,
-        region_label,
-    )
-    print(f"Saved figure to {args.output}")
+        make_figure(
+            sequence,
+            base_scores,
+            tuned_scores,
+            output_path,
+            args.line_width,
+            args.dpi,
+            args.colour_percentile,
+            region_label,
+            model_name,
+        )
+        print(f"Saved figure to {output_path}")
+
+        del projection, causal_model, tokenizer, input_ids
+        gc.collect()
+        if device.type == "cuda":
+            torch.cuda.empty_cache()
+        elif device.type == "mps":
+            torch.mps.empty_cache()
 
 
 if __name__ == "__main__":
