@@ -49,6 +49,8 @@ import torch
 import torch.nn.functional as F
 import random
 
+from hyenadna_models import DEFAULT_HYENADNA_MODEL, resolve_hyenadna_revision
+
 # ── Configuration ─────────────────────────────────────────────────────────────
 
 OSC_IP        = "127.0.0.1"
@@ -416,19 +418,22 @@ print(f"✓ Mapping loaded: {len(flat_mapping)} codons")
 # ── Load HyenaDNA ──────────────────────────────────────────────────────────────
 
 print("Loading HyenaDNA model...")
+HYENADNA_MODEL_REVISION = resolve_hyenadna_revision(DEFAULT_HYENADNA_MODEL)
 hyena_tokenizer = AutoTokenizer.from_pretrained(
-    "LongSafari/hyenadna-tiny-1k-seqlen-hf",
+    DEFAULT_HYENADNA_MODEL,
+    revision=HYENADNA_MODEL_REVISION,
     trust_remote_code=True
 )
 hyena_model = AutoModel.from_pretrained(
-    "LongSafari/hyenadna-tiny-1k-seqlen-hf",
+    DEFAULT_HYENADNA_MODEL,
+    revision=HYENADNA_MODEL_REVISION,
     trust_remote_code=True,
     return_dict=True
 )
 hyena_model.config.return_dict = True
 print("✓ Model loaded")
 
-PROJECTION_HEAD_PATH = "projection_head_finetuned.pt"
+PROJECTION_HEAD_PATH = "heads/projection_head_hyenadna_tiny-1k.pt"
 
 def load_projection_head(hidden_size: int) -> torch.nn.Linear:
     proj = torch.nn.Linear(hidden_size, 4, bias=False)
@@ -446,9 +451,8 @@ def load_projection_head(hidden_size: int) -> torch.nn.Linear:
     return proj
 
 # Instantiate once at startup so the same weights are used for every generation call.
-# If projection_head_finetuned.pt exists (produced by train_projection_head.py) those
-# weights are loaded; otherwise Xavier-init random weights are used — run
-# train_projection_head.py on the CCA1 FASTA to get meaningful nucleotide predictions.
+# If the tiny-1k head produced by train_projection_head.py exists in heads/, those
+# weights are loaded; otherwise Xavier-init random weights are used.
 _hidden_size = hyena_model.config.d_model
 hyena_proj   = load_projection_head(_hidden_size)
 
