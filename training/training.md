@@ -191,7 +191,7 @@ fine-tuning benefit was greater on the held-out circadian gene.
 sequence surprising. For target nucleotide $x_t$, it computes
 
 $$
-\operatorname{CE}_t = -\log p_4(x_t\mid x_{<t}).
+\mathrm{CE}_t = -\log p_4(x_t\mid x_{<t}).
 $$
 
 The backbone processes the same input window once. Two projections are then
