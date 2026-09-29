@@ -18,11 +18,16 @@ but whether it lowers loss more strongly on held-out ELF4 than on ECT2.
 ## Directory layout
 
 ```text
-data/
-├── circadian/             # Training records; internal validation tails come from these
-├── circadian-held-out/    # Circadian test records, never used for model selection
-├── non-circadian/         # Non-circadian test controls
-└── xent/                  # Cross-entropy figures
+training/
+├── data/
+│   ├── circadian/          # Training records; validation tails come from these
+│   ├── circadian-held-out/ # Circadian tests, never used for model selection
+│   └── non-circadian/      # Non-circadian test controls
+├── heads/                  # Fitted projection-head checkpoints
+├── runs/                   # Training logs and metrics
+└── study/
+    ├── models/             # Cross-model comparison figure
+    └── xent/               # Per-model cross-entropy figures
 ```
 
 The FASTA files remain separate. The trainer constructs windows within each
@@ -113,36 +118,39 @@ The reference accessions represented here are `NC_003070.9`, `NC_003071.7`,
 The intended invocation is:
 
 ```bash
-uv run python train_projection_head.py \
-  --fasta-files 'data/circadian/*.fasta' \
-  --fasta-test-files 'data/circadian-held-out/*.fasta' \
-  --fasta-test-files 'data/non-circadian/*.fasta' \
+uv run python -m training.train_projection_head \
+  --fasta-files 'training/data/circadian/*.fasta' \
+  --fasta-test-files 'training/data/circadian-held-out/*.fasta' \
+  --fasta-test-files 'training/data/non-circadian/*.fasta' \
   --device auto
 ```
 
-Unless `--output` is supplied, the fitted head is saved under `heads/` with the
-HyenaDNA model configuration in its filename. To train the same dataset across
-all supported HyenaDNA sizes sequentially, with one log per run, use:
+Unless `--output` is supplied, the fitted head is saved under `training/heads/`
+with the HyenaDNA model configuration in its filename. To train the same dataset
+across all supported HyenaDNA sizes sequentially, with one log per run, use:
 
 ```bash
-./train_hyenadna_models.sh
+training/train_hyenadna_models.sh
 ```
 
-The heads are written to `heads/` and clean, progress-bar-free logs to `runs/`.
+The heads are written to `training/heads/` and clean, progress-bar-free logs to
+`training/runs/`.
 The trainer's `--log-file` option mirrors its ordinary output and uncaught errors
 to a file while keeping the transient `tqdm` display on the terminal.
-Each completed batch run also writes structured `*.metrics.json` data to `runs/`.
+Each completed batch run also writes structured `*.metrics.json` data to
+`training/runs/`.
 After training all models, generate the cross-model table and plot with:
 
 ```bash
-uv run python compare_hyenadna_models.py
+uv run python -m training.compare_hyenadna_models
 ```
 
-This produces `runs/hyenadna_model_metrics.md`, a more detailed CSV alongside
-it, and `data/xent/hyenadna_model_comparison.png`.
+This produces `training/runs/hyenadna_model_metrics.md`, a more detailed CSV
+alongside it, and `training/study/models/hyenadna_model_comparison.png`.
 
-Running `uv run python xent.py` without `--projection-head` then discovers those
-heads and writes one comparison figure per model under `data/xent/`.
+Running `uv run python -m training.xent` without `--projection-head` then
+discovers those heads and writes one comparison figure per model under
+`training/study/xent/`.
 
 For each sufficiently long training gene, a contiguous tail is reserved for
 validation and early stopping. Test files are kept completely outside training,
@@ -172,8 +180,8 @@ This separation supports three different interpretations:
 - The direct FASTA links encode the exact reference accession, coordinates, and
   strand used for the local files.
 - The seven known HyenaDNA repositories are pinned to the commits recorded in
-  `hyenadna_models.py`. Use `--model-revision COMMIT_OR_TAG` to override the
-  relevant pin when deliberately testing another revision.
+  `training/hyenadna_models.py`. Use `--model-revision COMMIT_OR_TAG` to override
+  the relevant pin when deliberately testing another revision.
 
 ## Download the dataset
 
@@ -183,53 +191,54 @@ directories when needed and succeeds harmlessly when they already exist. Each
 network failures.
 
 ```bash
-mkdir -p data/circadian data/circadian-held-out data/non-circadian
+mkdir -p training/data/circadian training/data/circadian-held-out \
+  training/data/non-circadian
 
 curl --fail --location --retry 5 \
   'https://eutils.ncbi.nlm.nih.gov/entrez/eutils/efetch.fcgi?db=nuccore&id=NC_003071.7&seq_start=19245591&seq_stop=19248915&strand=1&rettype=fasta&retmode=text' \
-  --output data/circadian/arabidopsis-thaliana.CCA1.fasta
+  --output training/data/circadian/arabidopsis-thaliana.CCA1.fasta
 
 curl --fail --location --retry 5 \
   'https://eutils.ncbi.nlm.nih.gov/entrez/eutils/efetch.fcgi?db=nuccore&id=NC_003071.7&seq_start=11058944&seq_stop=11063324&strand=1&rettype=fasta&retmode=text' \
-  --output data/circadian/arabidopsis-thaliana.ELF3.fasta
+  --output training/data/circadian/arabidopsis-thaliana.ELF3.fasta
 
 curl --fail --location --retry 5 \
   'https://eutils.ncbi.nlm.nih.gov/entrez/eutils/efetch.fcgi?db=nuccore&id=NC_003070.9&seq_start=8061751&seq_stop=8067790&strand=1&rettype=fasta&retmode=text' \
-  --output data/circadian/arabidopsis-thaliana.GI.fasta
+  --output training/data/circadian/arabidopsis-thaliana.GI.fasta
 
 curl --fail --location --retry 5 \
   'https://eutils.ncbi.nlm.nih.gov/entrez/eutils/efetch.fcgi?db=nuccore&id=NC_003070.9&seq_start=33365&seq_stop=37871&strand=2&rettype=fasta&retmode=text' \
-  --output data/circadian/arabidopsis-thaliana.LHY.fasta
+  --output training/data/circadian/arabidopsis-thaliana.LHY.fasta
 
 curl --fail --location --retry 5 \
   'https://eutils.ncbi.nlm.nih.gov/entrez/eutils/efetch.fcgi?db=nuccore&id=NC_003074.8&seq_start=17183042&seq_stop=17186959&strand=1&rettype=fasta&retmode=text' \
-  --output data/circadian/arabidopsis-thaliana.LUX.fasta
+  --output training/data/circadian/arabidopsis-thaliana.LUX.fasta
 
 curl --fail --location --retry 5 \
   'https://eutils.ncbi.nlm.nih.gov/entrez/eutils/efetch.fcgi?db=nuccore&id=NC_003076.8&seq_start=8356204&seq_stop=8358546&strand=2&rettype=fasta&retmode=text' \
-  --output data/circadian/arabidopsis-thaliana.PRR5.fasta
+  --output training/data/circadian/arabidopsis-thaliana.PRR5.fasta
 
 curl --fail --location --retry 5 \
   'https://eutils.ncbi.nlm.nih.gov/entrez/eutils/efetch.fcgi?db=nuccore&id=NC_003076.8&seq_start=637681&seq_stop=642030&strand=2&rettype=fasta&retmode=text' \
-  --output data/circadian/arabidopsis-thaliana.PRR7.fasta
+  --output training/data/circadian/arabidopsis-thaliana.PRR7.fasta
 
 curl --fail --location --retry 5 \
   'https://eutils.ncbi.nlm.nih.gov/entrez/eutils/efetch.fcgi?db=nuccore&id=NC_003071.7&seq_start=19232607&seq_stop=19235179&strand=1&rettype=fasta&retmode=text' \
-  --output data/circadian/arabidopsis-thaliana.PRR9.fasta
+  --output training/data/circadian/arabidopsis-thaliana.PRR9.fasta
 
 curl --fail --location --retry 5 \
   'https://eutils.ncbi.nlm.nih.gov/entrez/eutils/efetch.fcgi?db=nuccore&id=NC_003076.8&seq_start=24674963&seq_stop=24678550&strand=1&rettype=fasta&retmode=text' \
-  --output data/circadian/arabidopsis-thaliana.TOC1.fasta
+  --output training/data/circadian/arabidopsis-thaliana.TOC1.fasta
 
 curl --fail --location --retry 5 \
   'https://eutils.ncbi.nlm.nih.gov/entrez/eutils/efetch.fcgi?db=nuccore&id=NC_003076.8&seq_start=23241320&seq_stop=23244590&strand=1&rettype=fasta&retmode=text' \
-  --output data/circadian/arabidopsis-thaliana.ZTL.fasta
+  --output training/data/circadian/arabidopsis-thaliana.ZTL.fasta
 
 curl --fail --location --retry 5 \
   'https://eutils.ncbi.nlm.nih.gov/entrez/eutils/efetch.fcgi?db=nuccore&id=NC_003071.7&seq_start=16734294&seq_stop=16734953&strand=2&rettype=fasta&retmode=text' \
-  --output data/circadian-held-out/arabidopsis-thaliana.ELF4.fasta
+  --output training/data/circadian-held-out/arabidopsis-thaliana.ELF4.fasta
 
 curl --fail --location --retry 5 \
   'https://eutils.ncbi.nlm.nih.gov/entrez/eutils/efetch.fcgi?db=nuccore&id=NC_003074.8&seq_start=4384563&seq_stop=4388592&strand=2&rettype=fasta&retmode=text' \
-  --output data/non-circadian/arabidopsis-thaliana.ECT2.fasta
+  --output training/data/non-circadian/arabidopsis-thaliana.ECT2.fasta
 ```
