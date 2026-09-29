@@ -39,13 +39,13 @@ for deciding whether the adjustment helped.
 Softmax over the four logits renormalises the distribution to the four
 canonical bases. For a base $b$,
 
-$$
+```math
 p_4(b\mid h_t) =
 \frac{\exp z_b}{\sum_{c\in\{A,C,G,T\}}\exp z_c}
 =
 \frac{p_{\mathrm{vocab}}(b\mid h_t)}
 {\sum_{c\in\{A,C,G,T\}}p_{\mathrm{vocab}}(c\mid h_t)}.
-$$
+```
 
 This is a conditional distribution given that the next token is one of A/C/G/T.
 It is not the original model's full-vocabulary probability. This distinction is
