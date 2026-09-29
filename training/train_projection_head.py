@@ -17,11 +17,18 @@ from torch.utils.data import DataLoader, Dataset
 from tqdm.auto import tqdm
 from transformers import AutoModelForCausalLM, AutoTokenizer
 
-from training.hyenadna_models import (
-    AUTO_MODEL_REVISION,
-    DEFAULT_HYENADNA_MODEL,
-    resolve_hyenadna_revision,
-)
+if __package__:
+    from .hyenadna_models import (
+        AUTO_MODEL_REVISION,
+        DEFAULT_HYENADNA_MODEL,
+        resolve_hyenadna_revision,
+    )
+else:
+    from hyenadna_models import (
+        AUTO_MODEL_REVISION,
+        DEFAULT_HYENADNA_MODEL,
+        resolve_hyenadna_revision,
+    )
 
 DEFAULT_MODEL_NAME = DEFAULT_HYENADNA_MODEL
 DEFAULT_WINDOW_SIZE = 512
@@ -75,7 +82,9 @@ def default_projection_path(model_name: str) -> str:
     model_data = re.sub(r"^hyenadna-", "", model_id)
     model_data = model_data.replace("-seqlen-", "-")
     model_data = re.sub(r"-hf$", "", model_data)
-    return str(Path("heads") / f"projection_head_hyenadna_{model_data}.pt")
+    return str(
+        Path("training/heads") / f"projection_head_hyenadna_{model_data}.pt"
+    )
 
 
 class SequenceWindowDataset(Dataset):
@@ -602,7 +611,7 @@ def main() -> None:
         help=(
             "Projection-head output path. By default, derives the filename from "
             "--model-name (for example, "
-            "heads/projection_head_hyenadna_tiny-1k.pt)."
+            "training/heads/projection_head_hyenadna_tiny-1k.pt)."
         ),
     )
     parser.add_argument(

@@ -3,6 +3,10 @@ set -euo pipefail
 
 # Train the same A/C/G/T projection head across the official HyenaDNA model sizes.
 # Models run sequentially so only one frozen backbone occupies memory at a time.
+script_dir="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
+repo_root="$(dirname -- "${script_dir}")"
+cd "${repo_root}"
+
 models=(
   "LongSafari/hyenadna-tiny-1k-seqlen-hf"
   "LongSafari/hyenadna-tiny-1k-seqlen-d256-hf"
@@ -13,7 +17,7 @@ models=(
   "LongSafari/hyenadna-large-1m-seqlen-hf"
 )
 
-mkdir -p heads runs
+mkdir -p training/heads training/runs
 
 for model in "${models[@]}"; do
   model_id="${model##*/}"
@@ -25,7 +29,7 @@ for model in "${models[@]}"; do
 
   echo "Training ${model}"
   echo "Logging to ${log_path}"
-  uv run --frozen python train_projection_head.py \
+  uv run --frozen python -m training.train_projection_head \
     --model-name "${model}" \
     --log-file "${log_path}" \
     --metrics-file "${metrics_path}" \

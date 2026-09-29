@@ -451,8 +451,9 @@ def load_projection_head(hidden_size: int) -> torch.nn.Linear:
     return proj
 
 # Instantiate once at startup so the same weights are used for every generation call.
-# If the tiny-1k head produced by train_projection_head.py exists in heads/, those
-# weights are loaded; otherwise Xavier-init random weights are used.
+# If the tiny-1k head produced by training/train_projection_head.py exists in
+# training/heads/, those weights are loaded; otherwise Xavier-init random weights
+# are used.
 _hidden_size = hyena_model.config.d_model
 hyena_proj   = load_projection_head(_hidden_size)
 

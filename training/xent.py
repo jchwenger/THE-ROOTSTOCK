@@ -17,16 +17,23 @@ import torch.nn.functional as F
 from matplotlib.patches import Patch
 from transformers import AutoModelForCausalLM, AutoTokenizer
 
-from training.hyenadna_models import (
-    AUTO_MODEL_REVISION,
-    DEFAULT_HYENADNA_MODEL,
-    resolve_hyenadna_revision,
-)
+if __package__:
+    from .hyenadna_models import (
+        AUTO_MODEL_REVISION,
+        DEFAULT_HYENADNA_MODEL,
+        resolve_hyenadna_revision,
+    )
+else:
+    from hyenadna_models import (
+        AUTO_MODEL_REVISION,
+        DEFAULT_HYENADNA_MODEL,
+        resolve_hyenadna_revision,
+    )
 
 DEFAULT_MODEL = DEFAULT_HYENADNA_MODEL
 DEFAULT_FASTA = Path("training/data/circadian/arabidopsis-thaliana.CCA1.fasta")
 DEFAULT_HEADS_DIR = Path("training/heads")
-DEFAULT_OUTPUT_DIR = Path("training/data/xent")
+DEFAULT_OUTPUT_DIR = Path("training/study/xent")
 DEFAULT_VALIDATION_FRACTION = 0.1
 NUCLEOTIDES = "ACGT"
 

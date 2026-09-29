@@ -11,7 +11,10 @@ from pathlib import Path
 import matplotlib.pyplot as plt
 import numpy as np
 
-from training.hyenadna_models import HYENADNA_MODEL_REVISIONS
+if __package__:
+    from .hyenadna_models import HYENADNA_MODEL_REVISIONS
+else:
+    from hyenadna_models import HYENADNA_MODEL_REVISIONS
 
 DEFAULT_RUNS_DIR = Path("training/runs")
 DEFAULT_PLOT = Path("training/study/models/hyenadna_model_comparison.png")
@@ -45,7 +48,7 @@ def load_metrics(runs_dir: Path) -> list[dict]:
     if not paths:
         raise FileNotFoundError(
             f"No *.metrics.json files found in {runs_dir}. Run "
-            "./train_hyenadna_models.sh first."
+            "training/train_hyenadna_models.sh first."
         )
     runs = []
     for path in paths:
