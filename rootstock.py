@@ -26,7 +26,7 @@ DNA model:
   Resolution," NeurIPS 2023. https://arxiv.org/abs/2306.15794
 
 Semantic word mapping:
-  Built by build_mapping.py using sentence-transformers (all-MiniLM-L6-v2).
+  Built by tools/build_mapping.py using sentence-transformers (all-MiniLM-L6-v2).
   Stored in codon_word_mapping.json (generated offline, committed to repo).
 
 Author: Yvonne Wang
@@ -399,7 +399,7 @@ threading.Thread(target=start_ws_server, daemon=True).start()
 time.sleep(0.3)  # Allow server to bind before first broadcast
 
 # ── Load codon→word mapping ────────────────────────────────────────────────────
-# Generated offline by build_mapping.py from NCBI gene sequences + sentence-transformers.
+# Generated offline by tools/build_mapping.py from NCBI gene sequences + sentence-transformers.
 
 with open('codon_word_mapping.json', 'r') as f:
     mapping_table = json.load(f)

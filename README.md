@@ -10,7 +10,7 @@
 
 ## Quick Start
 
-> **Before starting:** upload `rootstock_sensor.ino` to the Arduino via Arduino IDE.  
+> **Before starting:** upload `rootstock_sensor.ino` to the Arduino via Arduino IDE.
 > The Arduino must be connected and Arduino IDE's Serial Monitor must be **closed**.
 
 Open **three terminal tabs** and run each command in order:
@@ -27,7 +27,7 @@ cd /Users/mac/rootstock && python rootstock.py
 
 **Terminal 3 — (Optional) Sensor debug monitor**
 ```bash
-cd /Users/mac/rootstock && python debug_vibration.py
+cd /Users/mac/rootstock && python tools/debug_vibration.py
 ```
 
 Then open your browser:
@@ -102,8 +102,9 @@ rootstock/
 ├── rootstock.py              # Main backend: sensor → model → WebSocket
 ├── rootstock_sensor.ino      # Arduino sketch: ADC read, amplify, Serial output
 ├── index.html                # Browser visualization: helix, plankton, presence meter
-├── build_mapping.py          # Offline: fetch NCBI genes → build codon_word_mapping.json
-├── debug_vibration.py        # Diagnostic: live sensor terminal dashboard
+├── tools/
+│   ├── build_mapping.py      # Offline: fetch NCBI genes → build root-level mapping
+│   └── debug_vibration.py    # Diagnostic: live sensor terminal dashboard
 ├── codon_word_mapping.json   # Pre-built codon → word table (commit this, don't re-run)
 └── bg.mp4                    # Background video (add your own, not tracked by git)
 ```
@@ -123,9 +124,9 @@ pip install -r requirements.txt
 | `python-osc` | OSC output for Max/MSP |
 | `transformers` | HyenaDNA model loading |
 | `torch` | Neural network inference |
-| `biopython` | NCBI gene fetch (build_mapping.py only) |
-| `sentence-transformers` | Semantic word embeddings (build_mapping.py only) |
-| `wordfreq` | Word frequency ranking (build_mapping.py only) |
+| `biopython` | NCBI gene fetch (`tools/build_mapping.py` only) |
+| `sentence-transformers` | Semantic word embeddings (`tools/build_mapping.py` only) |
+| `wordfreq` | Word frequency ranking (`tools/build_mapping.py` only) |
 
 ---
 
@@ -210,7 +211,7 @@ wscat -c ws://localhost:8765 | grep --line-buffered '"type":"presence"' | jq '.v
 ### `✗ Arduino not found — retrying in 2 s...`
 - Check USB cable is plugged in
 - Close Arduino IDE's Serial Monitor (it holds the port exclusively)
-- Run `python debug_vibration.py` to see which ports are detected
+- Run `python tools/debug_vibration.py` to see which ports are detected
 - On macOS, check `ls /dev/cu.*` for available devices
 
 ### `✗ WebSocket failed (port 8765 in use?)`
@@ -220,7 +221,7 @@ python rootstock.py
 ```
 
 ### `vibration 0.000` — sensor not responding
-- Run `python debug_vibration.py` (stop rootstock.py first) and watch the **Raw** column
+- Run `python tools/debug_vibration.py` (stop rootstock.py first) and watch the **Raw** column
 - Idle raw value should be ~300 (100× amp of ~3 ADC units of sensor noise)
 - If raw stays 0, the Arduino sketch may not be uploaded correctly
 - If raw is very high (> 500) at rest, `NOISE_FLOOR` in rootstock.py needs to be raised
@@ -243,8 +244,8 @@ python rootstock.py
 ### `codon_word_mapping.json` not found
 ```bash
 # Regenerate the mapping table (requires biopython, sentence-transformers)
-# Edit build_mapping.py first: set Entrez.email = "your@email.com"
-python build_mapping.py
+# Edit tools/build_mapping.py first: set Entrez.email = "your@email.com"
+python tools/build_mapping.py
 ```
 
 ---
