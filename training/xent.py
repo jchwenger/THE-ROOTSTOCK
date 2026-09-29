@@ -17,16 +17,16 @@ import torch.nn.functional as F
 from matplotlib.patches import Patch
 from transformers import AutoModelForCausalLM, AutoTokenizer
 
-from hyenadna_models import (
+from training.hyenadna_models import (
     AUTO_MODEL_REVISION,
     DEFAULT_HYENADNA_MODEL,
     resolve_hyenadna_revision,
 )
 
 DEFAULT_MODEL = DEFAULT_HYENADNA_MODEL
-DEFAULT_FASTA = Path("data/circadian/arabidopsis-thaliana.CCA1.fasta")
-DEFAULT_HEADS_DIR = Path("heads")
-DEFAULT_OUTPUT_DIR = Path("data/xent")
+DEFAULT_FASTA = Path("training/data/circadian/arabidopsis-thaliana.CCA1.fasta")
+DEFAULT_HEADS_DIR = Path("training/heads")
+DEFAULT_OUTPUT_DIR = Path("training/data/xent")
 DEFAULT_VALIDATION_FRACTION = 0.1
 NUCLEOTIDES = "ACGT"
 
@@ -54,7 +54,7 @@ def parse_args() -> argparse.Namespace:
         default=None,
         help=(
             "Fine-tuned projection-head weights. If omitted, evaluate every .pt "
-            "file in heads/."
+            "file in training/heads/."
         ),
     )
     parser.add_argument(
@@ -63,7 +63,7 @@ def parse_args() -> argparse.Namespace:
         default=None,
         help=(
             "Output path for a single comparison. When omitted, figures are named "
-            "after their heads under data/xent/."
+            "after their heads under training/study/xent."
         ),
     )
     parser.add_argument(
@@ -145,7 +145,7 @@ def parse_args() -> argparse.Namespace:
 
 
 def discover_projection_heads(selected: Path | None) -> list[Path]:
-    """Return one explicitly selected head or every checkpoint in heads/."""
+    """Return one explicitly selected head or every checkpoint in training/heads."""
     if selected is not None:
         if not selected.is_file():
             raise FileNotFoundError(f"Projection head does not exist: {selected}")

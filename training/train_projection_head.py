@@ -17,7 +17,7 @@ from torch.utils.data import DataLoader, Dataset
 from tqdm.auto import tqdm
 from transformers import AutoModelForCausalLM, AutoTokenizer
 
-from hyenadna_models import (
+from training.hyenadna_models import (
     AUTO_MODEL_REVISION,
     DEFAULT_HYENADNA_MODEL,
     resolve_hyenadna_revision,

@@ -49,7 +49,7 @@ import torch
 import torch.nn.functional as F
 import random
 
-from hyenadna_models import DEFAULT_HYENADNA_MODEL, resolve_hyenadna_revision
+from training.hyenadna_models import DEFAULT_HYENADNA_MODEL, resolve_hyenadna_revision
 
 # ── Configuration ─────────────────────────────────────────────────────────────
 
@@ -433,7 +433,7 @@ hyena_model = AutoModel.from_pretrained(
 hyena_model.config.return_dict = True
 print("✓ Model loaded")
 
-PROJECTION_HEAD_PATH = "heads/projection_head_hyenadna_tiny-1k.pt"
+PROJECTION_HEAD_PATH = "training/heads/projection_head_hyenadna_tiny-1k.pt"
 
 def load_projection_head(hidden_size: int) -> torch.nn.Linear:
     proj = torch.nn.Linear(hidden_size, 4, bias=False)

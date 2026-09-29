@@ -20,8 +20,8 @@ for model in "${models[@]}"; do
   model_data="${model_id#hyenadna-}"
   model_data="${model_data/-seqlen-/-}"
   model_data="${model_data%-hf}"
-  log_path="runs/train_hyenadna_${model_data}.log"
-  metrics_path="runs/train_hyenadna_${model_data}.metrics.json"
+  log_path="training/runs/train_hyenadna_${model_data}.log"
+  metrics_path="training/runs/train_hyenadna_${model_data}.metrics.json"
 
   echo "Training ${model}"
   echo "Logging to ${log_path}"
@@ -29,9 +29,9 @@ for model in "${models[@]}"; do
     --model-name "${model}" \
     --log-file "${log_path}" \
     --metrics-file "${metrics_path}" \
-    --fasta-files 'data/circadian/*.fasta' \
-    --fasta-test-files 'data/circadian-held-out/*.fasta' \
-    --fasta-test-files 'data/non-circadian/*.fasta' \
+    --fasta-files 'training/data/circadian/*.fasta' \
+    --fasta-test-files 'training/data/circadian-held-out/*.fasta' \
+    --fasta-test-files 'training/data/non-circadian/*.fasta' \
     --stride 16 \
     --device auto
 done

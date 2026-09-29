@@ -11,7 +11,7 @@ from pathlib import Path
 import matplotlib.pyplot as plt
 import numpy as np
 
-from hyenadna_models import HYENADNA_MODEL_REVISIONS
+from training.hyenadna_models import HYENADNA_MODEL_REVISIONS
 
 DEFAULT_RUNS_DIR = Path("training/runs")
 DEFAULT_PLOT = Path("training/study/models/hyenadna_model_comparison.png")
