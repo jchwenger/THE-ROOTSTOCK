@@ -243,3 +243,8 @@ curl --fail --location --retry 5 \
   'https://eutils.ncbi.nlm.nih.gov/entrez/eutils/efetch.fcgi?db=nuccore&id=NC_003074.8&seq_start=4384563&seq_stop=4388592&strand=2&rettype=fasta&retmode=text' \
   --output training/data/non-circadian/arabidopsis-thaliana.ECT2.fasta
 ```
+
+## AI attribution
+
+The training and summaries documented here were produced using GPT-5.6-Sol
+(medium reasoning effort).
