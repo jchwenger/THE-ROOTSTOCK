@@ -26,7 +26,7 @@ training/
 ├── heads/                  # Fitted projection-head checkpoints
 ├── runs/                   # Training logs and metrics
 └── study/
-    ├── models/             # Cross-model comparison figure
+    ├── models/             # Cross-model comparison table, CSV, and figure
     └── xent/               # Per-model cross-entropy figures
 ```
 
@@ -145,8 +145,9 @@ After training all models, generate the cross-model table and plot with:
 uv run python -m training.compare_hyenadna_models
 ```
 
-This produces `training/runs/hyenadna_model_metrics.md`, a more detailed CSV
-alongside it, and `training/study/models/hyenadna_model_comparison.png`.
+This produces `training/study/models/hyenadna_model_metrics.md`, a more detailed
+CSV alongside it, and
+`training/study/models/hyenadna_model_comparison.png`.
 
 Running `uv run python -m training.xent` without `--projection-head` then
 discovers those heads and writes one comparison figure per model under

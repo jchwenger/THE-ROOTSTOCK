@@ -18,8 +18,8 @@ else:
 
 DEFAULT_RUNS_DIR = Path("training/runs")
 DEFAULT_PLOT = Path("training/study/models/hyenadna_model_comparison.png")
-DEFAULT_CSV = Path("training/runs/hyenadna_model_metrics.csv")
-DEFAULT_MARKDOWN = Path("training/runs/hyenadna_model_metrics.md")
+DEFAULT_CSV = Path("training/study/models/hyenadna_model_metrics.csv")
+DEFAULT_MARKDOWN = Path("training/study/models/hyenadna_model_metrics.md")
 PREFERRED_GENES = ("ELF4", "ECT2")
 
 
