@@ -6,6 +6,5 @@ __pycache__/
 .DS_Store
 
 # datasets, results, runs
-data/*
-!data/xent
-runs
+training/data
+training/runs
