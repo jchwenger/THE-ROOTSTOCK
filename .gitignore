@@ -5,6 +5,7 @@ __pycache__/
 # MacOS
 .DS_Store
 
-# datasets, results
+# datasets, results, runs
 data/*
 !data/xent/hyena_base_finetuned_xent_comparison.png
+runs
