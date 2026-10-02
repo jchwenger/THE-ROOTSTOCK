@@ -2,9 +2,11 @@
 
 **Yvonne Wang**
 
+with *Jérémie Wenger*
+
 > *A bioart installation in which the body of a living plant writes its own poem.*
 
-*Arabidopsis thaliana* — the model organism of plant molecular biology — speaks through its genome. A piezoelectric sensor reads vibration from the plant's stem. That signal passes through a genomic language model (HyenaDNA), translating the CCA1 circadian clock gene into a stream of English words that accumulate, drift, and dissolve on screen. Touch makes the poem urgent. Stillness makes it slow. The plant is the author.
+*Arabidopsis thaliana* — the model organism of plant molecular biology — speaks through its genome. A piezoelectric sensor reads vibration from the plant's stem. That signal passes through a genomic language model (HyenaDNA), fine-tuned on the plant's own circadian clock genes and seeded with CCA1, translating DNA into a stream of English words that accumulate, drift, and dissolve on screen. Touch makes the poem urgent. Stillness makes it slow. The plant is the author.
 
 ---
 
@@ -67,7 +69,7 @@ To force a state from the backend terminal, type a key and then Enter: `0` still
 ║  PLANT  →  SENSOR  →  SIGNAL  →  MODEL  →  LANGUAGE  →  SCREEN     ║
 ╚══════════════════════════════════════════════════════════════════════╝
 
-  Arabidopsis thaliana (CCA1 gene)
+  Arabidopsis thaliana (circadian clock genes, CCA1 seed)
         │
         │  piezoelectric vibration sensor
         ▼
@@ -89,7 +91,9 @@ To force a state from the backend terminal, type a key and then Enter: `0` still
         └── 1.0 (intense)→  stress_response       (threshold, rupture…)      1 s/cycle
         │
         ▼
-  [HyenaDNA]  LongSafari/hyenadna-tiny-1k-seqlen-hf
+  [HyenaDNA]  LongSafari/hyenadna-tiny-1k-seqlen-hf  (frozen backbone)
+    + A/C/G/T head fine-tuned on 10 circadian genes
+      (training/heads/projection_head_hyenadna_tiny-1k.pt)
     SEED: "ATGGATCTCGAGAAGAGAAGAGTTTCAGAG"  (CCA1 first 30 bp)
       → generates 30 new nucleotides per cycle
       → appended to growing sequence (last 512 bp as context)
@@ -132,6 +136,22 @@ So the same DNA reads differently depending on the plant's state. With the curre
 
 (Below presence 0.02 no generation happens at all; the "still" row describes the vocabulary just above that gate.) The dominant function of each line is sent as `function` in the `line` WebSocket message, and each word's own function is sent in its `codon` message.
 
+### The fine-tuned DNA head
+
+HyenaDNA itself is left untouched. Only its last step has been adapted, where the model's hidden state becomes a choice between A, C, G and T. That four-way head starts from HyenaDNA's own pretrained A/C/G/T outputs and is fine-tuned on a small dataset of *Arabidopsis thaliana* circadian clock genes:
+
+| Role | Genes |
+|---|---|
+| Training (tails kept for validation) | CCA1, LHY, PRR9, PRR7, PRR5, TOC1, ELF3, LUX, GI, ZTL |
+| Held-out circadian test | ELF4 |
+| Non-circadian control | ECT2 |
+
+The set covers the morning, daytime and evening parts of the clock rather than CCA1 alone. CCA1 is still the seed of the generated sequence and the source of the circadian vocabulary in `codon_word_mapping.json`.
+
+The head is a small adjustment. On the tiny-1k model used here, cross-entropy on ELF4 falls from 1.363 to 1.338 nats per base, about twice the gain on the ECT2 control (1.342 → 1.329). This suggests the head has learned something about the clock genes beyond general *Arabidopsis* composition. With only two test genes, treat that as an indication rather than a proof. If the head file is missing, `rootstock.py` falls back to a random head and says so at startup.
+
+The dataset, download commands and gene choices are described in [`training/dataset.md`](training/dataset.md). The training procedure, evaluation and a comparison across seven HyenaDNA sizes are in [`training/training.md`](training/training.md).
+
 ---
 
 ## File Structure
@@ -144,6 +164,12 @@ rootstock/
 ├── tools/
 │   ├── build_mapping.py      # Offline: fetch NCBI genes → build root-level mapping
 │   └── debug_vibration.py    # Diagnostic: live sensor terminal dashboard
+├── training/                 # Fine-tuning the A/C/G/T head on circadian genes
+│   ├── dataset.md            # Gene choices, splits, download commands
+│   ├── training.md           # Method, evaluation, cross-model results
+│   ├── train_projection_head.py
+│   ├── heads/                # Fitted heads (rootstock.py loads the tiny-1k one)
+│   └── study/                # Comparison tables and figures
 ├── codon_word_mapping.json   # Pre-built codon → word table (commit this, don't re-run)
 └── bg.mp4                    # Background video (add your own, not tracked by git)
 ```
@@ -293,7 +319,8 @@ python tools/build_mapping.py
 
 - **HyenaDNA**: Nguyen et al., *"HyenaDNA: Long-Range Genomic Sequence Modeling at Single Nucleotide Resolution,"* NeurIPS 2023. [arxiv.org/abs/2306.15794](https://arxiv.org/abs/2306.15794)
 - **Sentence-BERT**: Reimers & Gurevych, *"Sentence-BERT,"* EMNLP 2019. [arxiv.org/abs/1908.10084](https://arxiv.org/abs/1908.10084)
-- **Gene sources**: NCBI Nucleotide — CCA1 `NM_001035612`, Photosynthesis `AY091856`, Stress response `NM_124370`
+- **Gene sources (word mapping)**: NCBI Nucleotide — CCA1 `NM_001035612`, Photosynthesis `AY091856`, Stress response `NM_124370`
+- **Gene sources (head fine-tuning)**: NCBI reference chromosomes for *Arabidopsis thaliana*, listed with exact coordinates in [`training/dataset.md`](training/dataset.md)
 - **wordfreq**: Robyn Speer et al. [github.com/rspeer/wordfreq](https://github.com/rspeer/wordfreq)
 
 ---

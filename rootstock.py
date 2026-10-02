@@ -1,13 +1,15 @@
 """
 THE ROOTSTOCK — Generative Poetry System
 =========================================
-A bioart installation that translates the living genome of Arabidopsis thaliana (CCA1 gene)
-into generative English poetry, driven by vibration sensed from the plant itself.
+A bioart installation that translates the living genome of Arabidopsis thaliana (seeded
+from the CCA1 circadian clock gene) into generative English poetry, driven by vibration
+sensed from the plant itself.
 
 Pipeline:
   1. Arduino piezoelectric sensor reads plant vibration → serial port → vibration_thread
   2. vibration_thread computes a presence score (0.0 = still, 1.0 = intense touch)
-  3. HyenaDNA model extends a CCA1 seed sequence into new DNA nucleotides
+  3. HyenaDNA, with an A/C/G/T head fine-tuned on Arabidopsis circadian-clock genes,
+     extends a CCA1 seed sequence into new DNA nucleotides
   4. Codon triplets (3-bp windows) are looked up in codon_word_mapping.json, where
      most codons carry one word per gene function (circadian / photosynthesis / stress)
   5. Presence score chooses which of those readings each codon takes, and gates it:
@@ -25,6 +27,12 @@ DNA model:
   HyenaDNA — LongSafari/hyenadna-tiny-1k-seqlen-hf
   Nguyen et al., "HyenaDNA: Long-Range Genomic Sequence Modeling at Single Nucleotide
   Resolution," NeurIPS 2023. https://arxiv.org/abs/2306.15794
+
+  The backbone is frozen. Only its four-way A/C/G/T output head is fine-tuned, starting
+  from the pretrained rows, on a small set of Arabidopsis circadian-clock genes
+  (CCA1, LHY, PRR9, PRR7, PRR5, TOC1, ELF3, LUX, GI, ZTL). ELF4 (circadian) and
+  ECT2 (non-circadian) are held out as tests.
+  See training/dataset.md and training/training.md.
 
 Semantic word mapping:
   Built by tools/build_mapping.py using sentence-transformers (all-MiniLM-L6-v2).
@@ -577,8 +585,9 @@ def load_projection_head(hidden_size: int) -> torch.nn.Linear:
 
 # Instantiate once at startup so the same weights are used for every generation call.
 # If the tiny-1k head produced by training/train_projection_head.py exists in
-# training/heads/, those weights are loaded; otherwise Xavier-init random weights
-# are used.
+# training/heads/, those weights are loaded: the pretrained A/C/G/T rows fine-tuned
+# on the circadian-gene dataset (training/dataset.md). Otherwise Xavier-init random
+# weights are used.
 _hidden_size = hyena_model.config.d_model
 hyena_proj   = load_projection_head(_hidden_size)
 
@@ -639,8 +648,9 @@ def hyena_extend(sequence: str, n_new: int = 30, temperature: float = 0.9) -> st
     Method:
       A lightweight linear projection head (4-class: A/C/G/T) is attached to
       HyenaDNA's last hidden state and sampled via multinomial distribution.
-      The projection loads a fine-tuned head from disk when available; otherwise
-      it falls back to Xavier-init random weights.
+      The projection loads a head fine-tuned on Arabidopsis circadian-clock
+      genes from disk when available; otherwise it falls back to Xavier-init
+      random weights.
       Only the last 512 characters of context are fed per step to respect
       the model's sequence length limit.
 
@@ -649,7 +659,8 @@ def hyena_extend(sequence: str, n_new: int = 30, temperature: float = 0.9) -> st
       deep biological grammar: codon usage bias, GC content patterns,
       regulatory motifs. The resulting DNA is not random — it follows
       genomic logic, making the generated poetry structurally grounded
-      in actual molecular biology.
+      in actual molecular biology. The fine-tuned head then nudges its
+      next-base choices toward the composition of the plant's own clock genes.
     """
     nucleotides = 'ACGT'
     generated   = ''
@@ -774,7 +785,7 @@ def main():
 
         # Fast timescale: presence controls vocabulary style (word filtering).
         # Slow timescale: plant_memory controls DNA generation temperature.
-        #   memory=0.0 → temperature=0.5 (conservative, close to CCA1 statistics)
+        #   memory=0.0 → temperature=0.5 (conservative, close to circadian-gene statistics)
         #   memory=1.0 → temperature=1.5 (disordered, stress-state DNA)
         memory      = get_plant_memory()
         temperature = 0.5 + memory * 1.0
