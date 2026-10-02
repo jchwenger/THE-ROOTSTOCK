@@ -85,6 +85,41 @@ FUNCTION_WEIGHTS = {
     "stress_response": lambda p: 0.05 + p * 0.90,  # 0.05 (still) → 0.95 (active)
 }
 
+# ── Terminal colours ──────────────────────────────────────────────────────────
+# Gene function colours are lighter versions of the codon tag colours in
+# index.html (those are too dark on a dark terminal). Exact 24-bit colours
+# where the terminal supports them, nearest 256-colour codes otherwise (e.g.
+# macOS Terminal.app). Disabled when output is not a terminal or NO_COLOR is set.
+
+USE_COLOR = sys.stdout.isatty() and "NO_COLOR" not in os.environ
+TRUECOLOR = os.environ.get("COLORTERM", "") in ("truecolor", "24bit")
+
+FUNCTION_COLORS = {          # (24-bit RGB, 256-colour fallback)
+    "circadian":       ((0x6f, 0xbf, 0x94), 72),
+    "photosynthesis":  ((0xd4, 0xa9, 0x4a), 179),
+    "stress_response": ((0xd7, 0x7a, 0x7a), 174),
+}
+
+
+def color(text: str, code: str) -> str:
+    """Wrap text in an ANSI colour code (no-op when colours are disabled)."""
+    return f"\033[{code}m{text}\033[0m" if USE_COLOR else text
+
+
+def color_rgb(text: str, spec: tuple) -> str:
+    """Colour text with a (24-bit RGB, 256-colour fallback) pair."""
+    (r, g, b), fallback = spec
+    return color(text, f"38;2;{r};{g};{b}" if TRUECOLOR else f"38;5;{fallback}")
+
+
+def color_fn(text: str, fn: str) -> str:
+    """Colour text with the browser colour of gene function fn."""
+    return color_rgb(text, FUNCTION_COLORS[fn]) if fn in FUNCTION_COLORS else text
+
+
+LIME       = ((0x7f, 0xff, 0x00), 118)  # survives
+BRIGHT_RED = ((0xff, 0x30, 0x30), 196)  # discarded
+
 # ── Presence score (thread-shared) ────────────────────────────────────────────
 
 _presence_score = 0.0
@@ -675,14 +710,25 @@ def sequence_to_words(sequence: str, candidates: dict, presence: float = 0.5) ->
     for codon in codons:
         readings = candidates.get(codon)
         if not readings:
+            print(f"  {codon}  no mapping{'':<42} -> {color_rgb('✗', BRIGHT_RED)}")
             continue
         weights = [FUNCTION_WEIGHTS.get(m.get("gene_function", ""), lambda p: 0.4)(presence)
                    for m in readings]
         i = random.choices(range(len(readings)), weights=weights)[0]
-        if random.random() < weights[i]:
+        fn    = readings[i].get("gene_function", "")
+        pick  = weights[i] / sum(weights)  # chance this reading was the one chosen
+        roll  = random.random()
+        keep  = roll < weights[i]
+        # Pad before colouring: ANSI codes would otherwise count towards the width.
+        label = f"{fn:<15} {f'({pick:.0%})':>6}"  # percentages right-aligned in one column
+        print(f"  {codon}  {color_fn(f'{label:<22}', fn)} {readings[i]['word']:<12} "
+              f"roll {roll:.2f} {'<' if keep else '≥'} {weights[i]:.2f} "
+              f"-> {color_rgb('✓', LIME) if keep else color_rgb('✗', BRIGHT_RED)}")
+        if keep:
             words.append(readings[i]["word"])
             codons_out.append(codon)
             metas.append(readings[i])
+    print()
     return words, codons_out, metas
 
 
@@ -789,13 +835,15 @@ def main():
                 # can color the codon tag to match the actual codons displayed.
                 dominant_fn = max(set(fn_buffer), key=fn_buffer.count) if fn_buffer else ""
 
-                # Codons printed above their words, each column as wide as the
-                # longer of the two; the label is padded to the longest one
-                # ([stress_response]) so lines align.
-                widths = [max(len(w), len(c)) for w, c in zip(line_buffer, codon_buffer)]
-                print(" " * 18 + " ".join(c.ljust(n) for c, n in zip(codon_buffer, widths)).rstrip())
-                print(f"{'[' + dominant_fn + ']':<17} "
-                      + " ".join(w.ljust(n) for w, n in zip(line_buffer, widths)).rstrip() + "\n")
+                # Codon, word and source gene function stacked in columns,
+                # each column as wide as the longest of the three.
+                rows   = (codon_buffer, line_buffer, [f"[{fn}]" for fn in fn_buffer])
+                widths = [max(map(len, col)) for col in zip(*rows)]
+                for row in rows[:2]:
+                    print("  " + "  ".join(s.ljust(n) for s, n in zip(row, widths)).rstrip())
+                print("  " + "  ".join(color_fn(s.ljust(n), fn)
+                                       for s, n, fn in zip(rows[2], widths, fn_buffer)).rstrip())
+                print()
 
                 osc_client.send_message("/rootstock/line",       line)
                 osc_client.send_message("/rootstock/word_count", word_count)
