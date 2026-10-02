@@ -8,8 +8,9 @@ Pipeline:
   1. Arduino piezoelectric sensor reads plant vibration → serial port → vibration_thread
   2. vibration_thread computes a presence score (0.0 = still, 1.0 = intense touch)
   3. HyenaDNA model extends a CCA1 seed sequence into new DNA nucleotides
-  4. Codon triplets (3-bp windows) are looked up in codon_word_mapping.json
-  5. Presence score gates which gene-functional vocabulary is allowed into each line:
+  4. Codon triplets (3-bp windows) are looked up in codon_word_mapping.json, where
+     most codons carry one word per gene function (circadian / photosynthesis / stress)
+  5. Presence score chooses which of those readings each codon takes, and gates it:
        - still  → circadian words dominate (sleep, return, night…)
        - active → stress_response words dominate (threshold, resist, rupture…)
   6. Completed lines are broadcast via WebSocket → browser visualization (index.html)
@@ -52,6 +53,12 @@ import random
 from training.hyenadna_models import DEFAULT_HYENADNA_MODEL, resolve_hyenadna_revision
 
 # ── Configuration ─────────────────────────────────────────────────────────────
+
+# Simulate the Arduino instead of reading the serial port (see dummy_sample_source).
+# Can also be enabled from the command line: python rootstock.py --dummy
+DUMMY = False
+if "--dummy" in sys.argv:
+    DUMMY = True
 
 OSC_IP        = "127.0.0.1"
 OSC_PORT      = 9000
@@ -163,6 +170,111 @@ def find_arduino_port() -> str | None:
 
 # ── Vibration sensing thread ───────────────────────────────────────────────────
 
+NOISE_FLOOR = 320  # idle Arduino output ≈ 300 (100× amp of ~3 ADC deviation)
+
+
+def process_samples(samples):
+    """
+    Turn a stream of raw sensor values into the shared presence score.
+
+    Input:  samples — iterable of raw values (0–1023), from the Arduino
+            (serial_sample_source) or the simulator (dummy_sample_source).
+    Output: none (updates _presence_score, broadcasts presence at ~5 Hz)
+
+    Both sources go through the exact same signal processing, so DUMMY
+    mode exercises the same dead zone, normalization and smoothing as
+    the installation (see vibration_thread for the details).
+    """
+    global _presence_score
+    recent_max = 350.0
+    last_bcast = 0.0
+
+    for val in samples:
+        # Reject values > 1023: concatenated serial frames from buffer overflow
+        if val > 1023:
+            continue
+
+        val_clean  = max(0.0, val - NOISE_FLOOR)
+        recent_max = max(recent_max * 0.990, max(val_clean, 350.0))
+        norm       = val_clean / recent_max
+
+        with _presence_lock:
+            _presence_score = min(1.0, _presence_score * 0.65 + norm * 0.60)
+            p = _presence_score
+
+        # Broadcast presence at ~5 Hz regardless of poetry generation state,
+        # so the browser visualization always reflects live sensor data.
+        now = time.time()
+        if now - last_bcast > 0.2:
+            ws_broadcast({"type": "presence", "level": round(p, 3)})
+            last_bcast = now
+
+
+def serial_sample_source(ser):
+    """
+    Yield raw float values read line by line from the Arduino serial port.
+    Empty or unparsable lines are skipped; serial errors propagate to the caller.
+    """
+    while True:
+        line = ser.readline().decode('utf-8', errors='ignore').strip()
+        if not line:
+            continue
+        try:
+            yield float(line)
+        except ValueError:
+            continue
+
+
+# ── DUMMY mode: simulated Arduino ──────────────────────────────────────────────
+# Each state emits raw values shaped like the sketch's output (gaussian around
+# a mean, with a share of idle samples mixed in, as a real touch flickers).
+# Tuned so that, after process_samples, presence settles in the three bands
+# the installation reacts to:
+#   still   → presence ≈ 0.00        (below the 0.02 gate: no words, silence)
+#   touch   → presence ≈ 0.2 – 0.6   (mixed vocabulary, ~10 s cycles)
+#   intense → presence ≈ 0.65 – 1.0  (stress_response vocabulary, fast cycles)
+
+DUMMY_STATES = {
+    #           raw mean  raw std  idle share  dwell (s)
+    "still":   (300,      12,      0.00,       (15, 40)),
+    "touch":   (430,      45,      0.25,       (10, 25)),
+    "intense": (760,      140,     0.10,       (5, 15)),
+}
+DUMMY_RATE = 25  # Hz, same as the Arduino sketch
+
+_dummy_override = None  # state name forced from the keyboard, or None for auto
+
+
+def dummy_sample_source():
+    """
+    Yield simulated raw sensor values at DUMMY_RATE Hz, forever.
+
+    In auto mode the simulator wanders between still / touch / intense,
+    staying in each state for a random dwell time (a visitor approaching,
+    touching, pressing, walking away). Typing 0 / 1 / 2 + Enter in the
+    terminal forces a state; a + Enter returns to auto (see keyboard_listener).
+    """
+    state, until, shown = "still", 0.0, None
+    while True:
+        now = time.time()
+        if _dummy_override:
+            state = _dummy_override
+        elif now >= until:
+            state = random.choice([s for s in DUMMY_STATES if s != state])
+            until = now + random.uniform(*DUMMY_STATES[state][3])
+        if state != shown:
+            mode = "forced" if _dummy_override else "auto"
+            print("-" * 40)
+            print(f"[dummy] {state} ({mode})")
+            shown = state
+
+        mean, std, idle, _ = DUMMY_STATES[state]
+        if random.random() < idle:
+            mean, std = DUMMY_STATES["still"][:2]
+        yield min(1023.0, max(0.0, random.gauss(mean, std)))
+        time.sleep(1 / DUMMY_RATE)
+
+
 def vibration_thread():
     """
     Background daemon thread: reads the piezoelectric sensor via Arduino serial,
@@ -184,13 +296,18 @@ def vibration_thread():
     The presence score is NOT reset to 0 on disconnect — it decays naturally
     via the 0.65 multiplier in subsequent reads once reconnected.
 
+    DUMMY mode: no serial port is opened; dummy_sample_source feeds simulated
+    values through the same pipeline instead.
+
     Artistic intent: presence is the plant's voice. The higher the score, the
     more the installation shifts from quiet, cyclical language toward urgent,
     stress-coded vocabulary and accelerated line production.
     """
-    global _presence_score
-    NOISE_FLOOR = 320  # idle Arduino output ≈ 300 (100× amp of ~3 ADC deviation)
-    recent_max  = 350.0
+    if DUMMY:
+        print("✓ DUMMY mode — simulating Arduino vibration data (no serial port)")
+        print("  type 0 / 1 / 2 + Enter to force still / touch / intense, a + Enter for auto")
+        process_samples(dummy_sample_source())
+        return
 
     while True:
         port = find_arduino_port()
@@ -207,36 +324,8 @@ def vibration_thread():
             time.sleep(2)
             continue
 
-        last_bcast = 0.0
         try:
-            while True:
-                line = ser.readline().decode('utf-8', errors='ignore').strip()
-                if not line:
-                    continue
-                try:
-                    val = float(line)
-                except ValueError:
-                    continue
-
-                # Reject values > 1023: concatenated serial frames from buffer overflow
-                if val > 1023:
-                    continue
-
-                val_clean  = max(0.0, val - NOISE_FLOOR)
-                recent_max = max(recent_max * 0.990, max(val_clean, 350.0))
-                norm       = val_clean / recent_max
-
-                with _presence_lock:
-                    _presence_score = min(1.0, _presence_score * 0.65 + norm * 0.60)
-                    p = _presence_score
-
-                # Broadcast presence at ~5 Hz regardless of poetry generation state,
-                # so the browser visualization always reflects live sensor data.
-                now = time.time()
-                if now - last_bcast > 0.2:
-                    ws_broadcast({"type": "presence", "level": round(p, 3)})
-                    last_bcast = now
-
+            process_samples(serial_sample_source(ser))
         except Exception as e:
             print(f"✗ Serial interrupted: {e} — reconnecting...")
             try:
@@ -404,16 +493,17 @@ time.sleep(0.3)  # Allow server to bind before first broadcast
 with open('codon_word_mapping.json', 'r') as f:
     mapping_table = json.load(f)
 
-flat_mapping   = {}  # codon (str) → word (str)
-codon_meta_map = {}  # codon (str) → full metadata dict
+# A codon can carry a word in several gene functions (e.g. ATG is a circadian
+# word and a stress_response word). All readings are kept; sequence_to_words
+# picks one per occurrence according to the current presence score.
+codon_candidates = {}  # codon (str) → list of metadata dicts, one per gene function
 
 for function, codons in mapping_table.items():
     for codon, data in codons.items():
-        if codon not in flat_mapping:   # first gene function wins; avoids cross-function collision
-            flat_mapping[codon]   = data["word"]
-            codon_meta_map[codon] = data
+        codon_candidates.setdefault(codon, []).append(data)
 
-print(f"✓ Mapping loaded: {len(flat_mapping)} codons")
+print(f"✓ Mapping loaded: {len(codon_candidates)} codons, "
+      + ", ".join(f"{fn} {len(cs)}" for fn, cs in mapping_table.items()))
 
 # ── Load HyenaDNA ──────────────────────────────────────────────────────────────
 
@@ -473,9 +563,14 @@ def keyboard_listener():
     Pausing halts DNA generation and broadcasts a status message to the browser.
     Ctrl-C exits the process entirely via KeyboardInterrupt in main().
     """
+    global _dummy_override
     print("Press Enter to pause/resume · Ctrl-C to quit\n")
+    dummy_keys = {"0": "still", "1": "touch", "2": "intense", "a": None}
     while True:
-        input()
+        key = input().strip().lower()
+        if DUMMY and key in dummy_keys:
+            _dummy_override = dummy_keys[key]
+            continue
         if running.is_set():
             running.clear()
             print("\n⏸  Paused (press Enter to resume)")
@@ -536,32 +631,38 @@ def hyena_extend(sequence: str, n_new: int = 30, temperature: float = 0.9) -> st
     return generated
 
 
-def sequence_to_words(sequence: str, mapping: dict, presence: float = 0.5) -> tuple:
+def sequence_to_words(sequence: str, candidates: dict, presence: float = 0.5) -> tuple:
     """
     Translate a DNA sequence into a list of English words using the codon mapping,
-    with presence-weighted probabilistic filtering per gene function.
+    choosing each codon's gene function according to presence, then gating it.
 
     Input:
-      sequence — raw DNA string (will be uppercased and split into codons)
-      mapping  — flat_mapping dict: codon → word
-      presence — current vibration score in [0.0, 1.0]
+      sequence   — raw DNA string (will be uppercased and split into codons)
+      candidates — codon_candidates dict: codon → list of metadata dicts
+                   (one per gene function in which the codon carries a word)
+      presence   — current vibration score in [0.0, 1.0]
 
-    Output: (words: list[str], codons: list[str])
-      Parallel lists; words[i] is the English translation of codons[i].
+    Output: (words: list[str], codons: list[str], metas: list[dict])
+      Parallel lists; words[i] is the English translation of codons[i],
+      metas[i] the metadata of the reading chosen (word, gene_function, scores).
 
-    Filtering logic:
-      Each codon belongs to a gene functional category (circadian / photosynthesis
-      / stress_response). Its inclusion probability is drawn from FUNCTION_WEIGHTS
-      evaluated at the current presence level. A codon is included only if
-      random.random() < that probability.
+    Selection logic, per codon:
+      1. Choose: the codon is read in one of its gene functions, drawn with
+         probability proportional to FUNCTION_WEIGHTS[fn](presence). Most codons
+         carry a word in all three functions, so the same codon reads as a
+         circadian word at rest and as a stress_response word under touch.
+      2. Gate: the chosen word surfaces only if random.random() is below that
+         same weight; otherwise the codon stays silent.
 
-      This means the same DNA sequence produces different poetry depending on
-      plant state — not by changing which DNA is generated, but by changing
-      which translations are allowed to surface. The poem is shaped by the
-      plant's physiology in real time.
+      With the current mapping and weights, the words that surface are about
+      86% circadian / 14% photosynthesis / 0% stress_response at rest (p = 0),
+      53% / 21% / 26% at a touch (p ≈ 0.45), and 4% / 15% / 81% at full presence.
+      The same DNA sequence produces different poetry depending on plant state:
+      not by changing which DNA is generated, but by changing which readings of
+      it are chosen and allowed to surface.
 
     Artistic intent:
-      Silence is as meaningful as words. At rest, stress_response codons are
+      Silence is as meaningful as words. At rest, stress_response readings are
       almost entirely suppressed, giving the poem a slow, cyclical character.
       During intense vibration, circadian words recede and boundary/threshold
       language erupts — as if the plant's defensive signaling becomes audible.
@@ -570,16 +671,19 @@ def sequence_to_words(sequence: str, mapping: dict, presence: float = 0.5) -> tu
     codons   = [sequence[i:i+3]
                 for i in range(0, len(sequence) - 2, 3)
                 if len(sequence[i:i+3]) == 3]
-    words, codons_out = [], []
+    words, codons_out, metas = [], [], []
     for codon in codons:
-        if codon not in mapping:
+        readings = candidates.get(codon)
+        if not readings:
             continue
-        fn   = codon_meta_map.get(codon, {}).get("gene_function", "")
-        prob = FUNCTION_WEIGHTS.get(fn, lambda p: 0.4)(presence)
-        if random.random() < prob:
-            words.append(mapping[codon])
+        weights = [FUNCTION_WEIGHTS.get(m.get("gene_function", ""), lambda p: 0.4)(presence)
+                   for m in readings]
+        i = random.choices(range(len(readings)), weights=weights)[0]
+        if random.random() < weights[i]:
+            words.append(readings[i]["word"])
             codons_out.append(codon)
-    return words, codons_out
+            metas.append(readings[i])
+    return words, codons_out, metas
 
 
 # ── Main generation loop ───────────────────────────────────────────────────────
@@ -606,6 +710,7 @@ def main():
     word_count       = 0
     line_buffer      = []
     codon_buffer     = []
+    fn_buffer        = []  # gene function chosen for each word in line_buffer
     cycle            = 0
 
     print("\n" + "=" * 40)
@@ -641,13 +746,15 @@ def main():
         cycle           += 1
         current_cycle    = cycle
 
-        new_words, new_codons = sequence_to_words(new_dna, flat_mapping, presence)
+        print(f"[new dna] {new_dna}\n")
+
+        new_words, new_codons, new_metas = sequence_to_words(new_dna, codon_candidates, presence)
         if not new_words:
+            print("!! No new words found, continuing... !!")
             continue
 
         # Broadcast per-codon metadata for OSC and browser UI
-        for codon in new_codons:
-            meta = codon_meta_map.get(codon, {})
+        for codon, meta in zip(new_codons, new_metas):
             osc_client.send_message("/rootstock/codon",          codon)
             osc_client.send_message("/rootstock/codon/word",     meta.get("word", ""))
             osc_client.send_message("/rootstock/codon/freq",     float(meta.get("word_frequency", 0)))
@@ -668,21 +775,27 @@ def main():
 
         # Accumulate words into lines; emit a line when the buffer is full.
         # word_count is a simple counter — avoids unbounded list growth over long sessions.
-        for word, codon in zip(new_words, new_codons):
+        for word, codon, meta in zip(new_words, new_codons, new_metas):
             line_buffer.append(word)
             codon_buffer.append(codon)
+            fn_buffer.append(meta.get("gene_function", ""))
             word_count += 1
             current_word_count = word_count
 
             if len(line_buffer) >= words_per_line:
                 line = " ".join(line_buffer)
-                print(line)
 
                 # Compute the dominant gene function for this line so the browser
                 # can color the codon tag to match the actual codons displayed.
-                fns = [codon_meta_map.get(c, {}).get("gene_function", "")
-                       for c in codon_buffer]
-                dominant_fn = max(set(fns), key=fns.count) if fns else ""
+                dominant_fn = max(set(fn_buffer), key=fn_buffer.count) if fn_buffer else ""
+
+                # Codons printed above their words, each column as wide as the
+                # longer of the two; the label is padded to the longest one
+                # ([stress_response]) so lines align.
+                widths = [max(len(w), len(c)) for w, c in zip(line_buffer, codon_buffer)]
+                print(" " * 18 + " ".join(c.ljust(n) for c, n in zip(codon_buffer, widths)).rstrip())
+                print(f"{'[' + dominant_fn + ']':<17} "
+                      + " ".join(w.ljust(n) for w, n in zip(line_buffer, widths)).rstrip() + "\n")
 
                 osc_client.send_message("/rootstock/line",       line)
                 osc_client.send_message("/rootstock/word_count", word_count)
@@ -698,6 +811,7 @@ def main():
 
                 line_buffer  = []
                 codon_buffer = []
+                fn_buffer    = []
 
         time.sleep(cycle_interval)
 

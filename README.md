@@ -40,6 +40,24 @@ Then open your browser:
 
 Touch or breathe on the plant — words appear when vibration presence rises above 0.02. Stronger contact → faster lines, stress-response vocabulary.
 
+### Running without the Arduino (DUMMY mode)
+
+To rehearse or develop the piece without the sensor, set `DUMMY = True` at the top of `rootstock.py`, or pass the flag:
+
+```bash
+python rootstock.py --dummy
+```
+
+No serial port is opened. Instead, a simulator emits raw values shaped like the Arduino's output (25 Hz, 0–1023), and they go through the same noise floor, normalization and smoothing as real sensor data. It moves on its own between the three vibration levels, staying in each one for a random time:
+
+| State | Simulated raw | Resulting presence | Effect |
+|---|---|---|---|
+| `still` | ~300 | ≈ 0.00 | below the 0.02 gate: silence |
+| `touch` | ~430, flickering | ≈ 0.2 – 0.6 | circadian and stress words mixed, ~10 s cycles |
+| `intense` | ~760, wide spread | ≈ 0.65 – 1.0 | mostly stress-response words, fast short lines |
+
+To force a state from the backend terminal, type a key and then Enter: `0` still · `1` touch · `2` intense · `a` back to auto. Enter on its own still pauses or resumes. The states are defined in `DUMMY_STATES` in `rootstock.py`.
+
 ---
 
 ## Visual Logic
@@ -65,9 +83,10 @@ Touch or breathe on the plant — words appear when vibration presence rises abo
         │
         │   presence gates vocabulary AND generation speed:
         │
-        ├── 0.0 (still)  →  circadian words    (sleep, return, night…)   20 s/line
-        ├── 0.5 (touch)  →  photosynthesis      (light, leaf, absorb…)    10 s/line
-        └── 1.0 (intense)→  stress_response     (threshold, rupture…)      1 s/line
+        ├── 0.0 (still)  →  circadian dominates   (sleep, return, night…)   20 s/cycle
+        ├── 0.5 (touch)  →  mixed, photosynthesis (light, leaf, absorb…)    10 s/cycle
+        │                   as a constant bridge
+        └── 1.0 (intense)→  stress_response       (threshold, rupture…)      1 s/cycle
         │
         ▼
   [HyenaDNA]  LongSafari/hyenadna-tiny-1k-seqlen-hf
@@ -78,7 +97,8 @@ Touch or breathe on the plant — words appear when vibration presence rises abo
         ▼
   [sequence_to_words]
     split into codons (3-bp windows)
-      → lookup in codon_word_mapping.json
+      → lookup in codon_word_mapping.json (one word per gene function)
+      → choose a reading:  gene_fn drawn ∝ FUNCTION_WEIGHTS[gene_fn](presence)
       → presence-weighted gate:  random() < FUNCTION_WEIGHTS[gene_fn](presence)
       → words either surface or remain silent
         │
@@ -92,6 +112,25 @@ Touch or breathe on the plant — words appear when vibration presence rises abo
   presence meter
   background video layer
 ```
+
+### How presence chooses the words
+
+`codon_word_mapping.json` gives each codon one word per gene function: all 64 codons have a circadian word and a stress-response word, and 41 also have a photosynthesis word. For example, `ATG` can be read as a circadian word or as `depth` (stress response).
+
+Every time a codon is translated, `sequence_to_words` does two things:
+
+1. **Chooses a reading.** It picks one of the codon's gene functions at random, weighted by `FUNCTION_WEIGHTS` at the current presence. Circadian weighs more when the plant is still, stress response more when it is touched, and photosynthesis stays constant.
+2. **Gates it.** The chosen word then surfaces only with that same probability; otherwise the codon stays silent.
+
+So the same DNA reads differently depending on the plant's state. With the current mapping and weights, the words that surface split like this:
+
+| Presence | Circadian | Photosynthesis | Stress response | Codons that surface |
+|---|---|---|---|---|
+| 0.0 (still) | 86% | 14% | 0% | 87% |
+| 0.45 (touch) | 53% | 21% | 26% | 56% |
+| 1.0 (intense) | 4% | 15% | 81% | 76% |
+
+(Below presence 0.02 no generation happens at all; the "still" row describes the vocabulary just above that gate.) The dominant function of each line is sent as `function` in the `line` WebSocket message, and each word's own function is sent in its `codon` message.
 
 ---
 
@@ -228,7 +267,7 @@ python rootstock.py
 
 ### Words generate without touching the plant
 - `NOISE_FLOOR` is too low — environmental vibration leaks through
-- Increase `NOISE_FLOOR` in `vibration_thread()` in rootstock.py (try 340–380)
+- Increase `NOISE_FLOOR` in rootstock.py (try 340–380)
 - Check that Arduino IDE is closed and no other process reads the port
 
 ### Words never appear even when touching
